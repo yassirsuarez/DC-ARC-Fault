@@ -1,0 +1,30 @@
+TRAINING REPORT — Classificatore Archi Elettrici PV
+Normativa di riferimento: UL 1699B
+============================================================
+
+Dataset:        C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_new.npz
+File totali:    34931
+label=1 arco:   21890
+label=0 no:     13041
+Train set:      2000
+Test set:       7161
+
+
+========================================
+MultiRocketHydra
+========================================
+  train_time_s: 27.0
+  n_train: 2000
+  n_test: 7161
+  balanced_accuracy: 0.9964
+  f1_arc: 0.997
+  roc_auc: 0.9964
+  avg_precision: 0.9967
+  best_threshold: 0.1
+  detected: 4501
+  missed: 19
+  false_positives: 8
+  true_negatives: 2633
+  detection_rate_pct: 99.58
+  false_positive_rate_pct: 0.3
+  ul1699b_conforme: True
