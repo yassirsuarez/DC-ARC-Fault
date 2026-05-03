@@ -1,0 +1,34 @@
+DATASET DI CALIBRAZIONE — ST Edge AI / X-CUBE-AI
+============================================================
+
+Sorgente dataset:    C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_new.npz
+Campioni per classe: 200
+Totale campioni:     400
+  label=0 (no arco): 200
+  label=1 (arco):    200
+
+File generati:
+  calibration_data.npz      shape=(400, 1, 1000)  dtype=float32  ← USA QUESTO in ST Edge AI
+    chiavi: 'input' (principale), 'X' (alternativa), 'y'
+  calibration_data.npy      shape=(400, 1, 1000)  dtype=float32  ← alternativo se npz non accettato
+  calibration_data_flat.npy shape=(400, 1000)  dtype=float32  ← fallback 2D
+  calibration_labels.npy    shape=(400,)  ← solo per verifica
+
+Statistiche X:
+  min:  -0.0312
+  max:  3.7265
+  mean: 0.6814
+  std:  0.4612
+
+Note:
+  - I dati sono in float32, normalizzati (I/I_nom)
+  - ST Edge AI esegue la quantizzazione INT8 internamente
+  - NON usare questo dataset per training o valutazione
+  - Selezionati casualmente con seed=42 (riproducibile)
+
+Come usare in ST Edge AI:
+  1. Importa il modello ONNX (inceptiontime.onnx)
+  2. Seleziona quantizzazione INT8
+  3. Carica calibration_data.npz come dataset di calibrazione
+     Se chiede la chiave: usa 'input' oppure 'X'
+  4. Avvia la quantizzazione

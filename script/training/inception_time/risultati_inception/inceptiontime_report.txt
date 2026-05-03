@@ -13,16 +13,16 @@ InceptionTime
 ========================================
   backend: tsai+PyTorch
   device: cuda
-  train_time_s: 500.2
-  balanced_accuracy: 0.9957
-  f1_arc: 0.9969
-  roc_auc: 0.9998
-  avg_precision: 0.9999
+  train_time_s: 495.0
+  balanced_accuracy: 0.9966
+  f1_arc: 0.9968
+  roc_auc: 0.9997
+  avg_precision: 0.9998
   best_threshold: 0.1
-  detected: 4507
-  missed: 13
-  false_positives: 15
-  true_negatives: 2626
-  detection_rate_pct: 99.71
-  false_positive_rate_pct: 0.57
+  detected: 4494
+  missed: 26
+  false_positives: 3
+  true_negatives: 2638
+  detection_rate_pct: 99.42
+  false_positive_rate_pct: 0.11
   ul1699b_conforme: True

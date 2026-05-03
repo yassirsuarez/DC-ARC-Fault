@@ -13,6 +13,10 @@ BACKEND: tsai + PyTorch  (NON aeon+TensorFlow)
 FIX: usa Learner diretto invece di TSClassifier per evitare il bug
      numpy.object_ causato dalla reinizializzazione interna dei dati.
 
+Export ONNX:
+  - inceptiontime.onnx        shape dinamica  ← inferenza generale
+  - inceptiontime_static.onnx shape fissa     ← ST Edge AI quantizzazione INT8
+
 Uso:
     python train_inceptiontime.py <arc_dataset_new.npz> [--out <cartella>]
                                   [--multirocket-report <training_report.txt>]
@@ -261,18 +265,16 @@ def train_inceptiontime_tsai(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Export ONNX via torch.onnx.export  (non serve TensorFlow)
+# Export ONNX — due versioni: dinamica e statica
 # ══════════════════════════════════════════════════════════════════════════════
 
-def export_onnx(learn, n_timepoints: int, onnx_path: str, device: torch.device) -> bool:
+def export_onnx(learn, n_timepoints: int, onnx_path: str,
+                device: torch.device) -> bool:
     """
-    Esporta il modello PyTorch InceptionTime in formato ONNX.
+    Esporta ONNX con shape DINAMICA — per inferenza generale e onnxruntime.
 
-    Non richiede TensorFlow né tf2onnx.
-    Compatibile con STM32Cube.AI / X-CUBE-AI.
-
-    Input ONNX:  (batch, 1, n_timepoints)  float32
-    Output ONNX: (batch, 2)               float32
+    Input:  (batch, 1, n_timepoints)  float32  — batch variabile
+    Output: (batch, 2)               float32
     """
     try:
         net   = learn.model.cpu().eval()
@@ -290,7 +292,7 @@ def export_onnx(learn, n_timepoints: int, onnx_path: str, device: torch.device) 
         )
 
         size_kb = os.path.getsize(onnx_path) / 1024
-        log.info("  ONNX salvato: %s  (%.1f KB)", onnx_path, size_kb)
+        log.info("  ONNX dinamico: %s  (%.1f KB)", onnx_path, size_kb)
         log.info("  Input:  (batch, 1, %d)  float32", n_timepoints)
         log.info("  Output: (batch, 2)      float32")
 
@@ -311,7 +313,62 @@ def export_onnx(learn, n_timepoints: int, onnx_path: str, device: torch.device) 
         return True
 
     except Exception as e:
-        log.error("  Export ONNX fallito: %s", e)
+        log.error("  Export ONNX dinamico fallito: %s", e)
+        return False
+
+
+def export_onnx_static(learn, n_timepoints: int, onnx_path: str,
+                        device: torch.device, batch_size: int = 1) -> bool:
+    """
+    Esporta ONNX con shape FISSA — richiesto da ST Edge AI per quantizzazione INT8.
+
+    ST Edge AI non riesce a inferire le shape con assi dinamici e restituisce
+    'list index out of range'. La shape fissa risolve il problema.
+
+    batch_size=1 è il valore corretto per STM32 (un campione alla volta).
+
+    Input fisso:  (1, 1, n_timepoints)  float32
+    Output fisso: (1, 2)               float32
+    """
+    try:
+        net   = learn.model.cpu().eval()
+        dummy = torch.zeros(batch_size, 1, n_timepoints, dtype=torch.float32)
+
+        torch.onnx.export(
+            net,
+            dummy,
+            onnx_path,
+            input_names=["input"],
+            output_names=["output"],
+            opset_version=13,
+            do_constant_folding=True,
+            # NON passare dynamic_axes — shape fissa per ST Edge AI
+        )
+
+        size_kb = os.path.getsize(onnx_path) / 1024
+        log.info("  ONNX statico:  %s  (%.1f KB)", onnx_path, size_kb)
+        log.info("  Input fisso:  (%d, 1, %d)  float32", batch_size, n_timepoints)
+        log.info("  Output fisso: (%d, 2)      float32", batch_size)
+        log.info("  → usa questo file in ST Edge AI per la quantizzazione INT8")
+
+        # Verifica con onnxruntime
+        try:
+            import onnxruntime as rt
+            sess     = rt.InferenceSession(onnx_path)
+            inp_name = sess.get_inputs()[0].name
+            sample   = np.zeros((batch_size, 1, n_timepoints), dtype=np.float32)
+            out      = sess.run(None, {inp_name: sample})[0]
+            log.info("  Verifica onnxruntime: output shape %s  ✓", out.shape)
+        except ImportError:
+            log.warning("  onnxruntime non installato — skip verifica")
+        except Exception as e:
+            log.warning("  Verifica onnxruntime: %s", e)
+
+        learn.model.to(device)
+        return True
+
+    except Exception as e:
+        log.error("  Export ONNX statico fallito: %s", e)
         return False
 
 
@@ -630,12 +687,20 @@ def main():
     plot_training_history(history, args.out)
     plot_results(y_test, y_pred, y_proba, args.out)
 
-    # ── export ONNX (torch.onnx.export — non serve TensorFlow) ───────────────
+    # ── export ONNX ───────────────────────────────────────────────────────────
     log.info("")
-    log.info("  --- Export ONNX (torch.onnx.export) ---")
+    log.info("  --- Export ONNX ---")
+    n_tp = X_tr.shape[-1]
+
+    # 1. ONNX dinamico — per onnxruntime e inferenza batch
     onnx_path = os.path.join(args.out, "inceptiontime.onnx")
-    export_onnx(learn, n_timepoints=X_tr.shape[-1],
-                onnx_path=onnx_path, device=device)
+    export_onnx(learn, n_timepoints=n_tp, onnx_path=onnx_path, device=device)
+
+    # 2. ONNX statico — per ST Edge AI quantizzazione INT8
+    #    Risolve l'errore "list index out of range" causato dagli assi dinamici
+    onnx_static_path = os.path.join(args.out, "inceptiontime_static.onnx")
+    export_onnx_static(learn, n_timepoints=n_tp,
+                       onnx_path=onnx_static_path, device=device, batch_size=1)
 
     # ── risultati InceptionTime ───────────────────────────────────────────────
     it_result = {
@@ -712,7 +777,8 @@ def main():
 
     log.info("")
     log.info("Output in: %s", args.out)
-    log.info("  inceptiontime.onnx            ← per X-CUBE-AI su STM32H7")
+    log.info("  inceptiontime.onnx            ← inferenza generale / onnxruntime")
+    log.info("  inceptiontime_static.onnx     ← ST Edge AI quantizzazione INT8")
     log.info("  inceptiontime_training.png")
     log.info("  results_inceptiontime.png")
     if mr_result:
