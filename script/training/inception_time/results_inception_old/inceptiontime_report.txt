@@ -1,0 +1,25 @@
+TRAINING REPORT — InceptionTime
+Normativa di riferimento: UL 1699B
+============================================================
+
+Dataset:    C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_new.npz
+Epoche:     150
+Batch size: 16
+
+
+========================================
+InceptionTime
+========================================
+  train_time_s: 7140.8
+  balanced_accuracy: 0.9885
+  f1_arc: 0.9887
+  roc_auc: 0.9998
+  avg_precision: 0.9999
+  best_threshold: 0.1
+  detected: 4423
+  missed: 97
+  false_positives: 4
+  true_negatives: 2637
+  detection_rate_pct: 97.85
+  false_positive_rate_pct: 0.15
+  ul1699b_conforme: True

@@ -30,6 +30,12 @@ Requisiti:
 
 Autori: progetto tesi magistrale — Manutenzione e Affidabilità
 Normativa di riferimento: UL 1699B — Photovoltaic DC Arc-Fault Circuit Protection
+
+MODIFICHE (dataset 34k finestre, WINDOW_S=100ms, FS=10kHz):
+  - max_per_class alzato a 3000 (serie da 1000 campioni, memoria ~24 MB)
+  - BATCH_SIZE ridotto a 32 per maggiore robustezza su dataset grandi
+  - FS_HZ rimane 10_000 (corretto per il dataset corrente)
+  - Soglie max_per_class riviste per finestre brevi (≤2000 campioni)
 """
 
 import argparse
@@ -70,8 +76,9 @@ log = logging.getLogger(__name__)
 
 # ── parametri ─────────────────────────────────────────────────────────────────
 FS_HZ        = 10_000   # Frequenza di campionamento [Hz]
+                        # Corretto per finestre da 100ms a 10kHz = 1000 campioni
 TEST_SIZE    = 0.20     # Frazione del dataset riservata al test set [-]
-BATCH_SIZE   = 50       # Dimensione batch per la predizione (gestione memoria)
+BATCH_SIZE   = 32       # MODIFICATO: era 50 — ridotto per robustezza su 34k campioni
 RAND_STATE   = 42       # Seed per riproducibilità
 
 # Soglie conformità UL1699B
@@ -118,7 +125,7 @@ def analyze_imbalance(y: np.ndarray) -> tuple:
         # class_weight='balanced' causa OOM con Hydra su dataset grandi
         # (dataset scorrevole può avere decine di migliaia di campioni).
         strategy = "undersample"
-        log.info("  Strategia: undersampling bilanciato (max 300 per classe)")
+        log.info("  Strategia: undersampling bilanciato")
         log.info("  (class_weight disabilitato: Hydra va in OOM con > 1000 campioni)")
 
     return strategy, n0, n1
@@ -127,7 +134,7 @@ def analyze_imbalance(y: np.ndarray) -> tuple:
 def undersample_train(
     X_train: np.ndarray,
     y_train: np.ndarray,
-    max_per_class: int = 300,
+    max_per_class: int = 3000,
 ) -> tuple:
     """
     Bilancia il train set tramite undersampling della classe maggioritaria.
@@ -136,8 +143,13 @@ def undersample_train(
     per evitare errori di allocazione memoria durante il training di Hydra.
     Il test set non viene mai modificato per mantenere la distribuzione reale.
 
+    Con finestre da 1000 campioni (100ms @ 10kHz):
+      - max_per_class=3000 → 6000 finestre × 1000 float32 ≈ 24 MB  ✓ sicuro
+      - max_per_class=5000 → 10000 finestre × 1000 float32 ≈ 40 MB  ✓ ok se RAM > 8GB
+
     Args:
-        max_per_class: numero massimo di campioni per classe (default: 300).
+        max_per_class: numero massimo di campioni per classe (default: 3000).
+                       Era 300 nella versione precedente per finestre da 20.000 campioni.
 
     Returns:
         X_bal, y_bal: train set bilanciato.
@@ -473,7 +485,7 @@ def train_and_evaluate(
     t_train = time.time() - t0
     log.info("  Training completato in %.1f s", t_train)
 
-    # Predizione a batch
+    # Predizione a batch (BATCH_SIZE=32, ridotto da 50 per robustezza su 34k campioni)
     log.info("  Predizione sul test set (batch_size=%d)...", BATCH_SIZE)
     y_pred_list, y_proba_list = [], []
     for start in range(0, len(X_te), BATCH_SIZE):
@@ -590,8 +602,8 @@ def main() -> None:
     data = np.load(args.dataset)
     X    = data["X"]
     y    = data["y"]
-    log.info("  X shape: %s  (%.1f s per serie a %d Hz)",
-             X.shape, X.shape[1] / FS_HZ, FS_HZ)
+    log.info("  X shape: %s  (%.1f ms per serie a %d Hz)",
+             X.shape, X.shape[1] / FS_HZ * 1000, FS_HZ)
     log.info("  y shape: %s", y.shape)
 
     # Analisi sbilanciamento
@@ -655,17 +667,40 @@ def main() -> None:
 
     plot_class_distribution(y_train, y_test, args.out)
 
-    # Gestione sbilanciamento sul solo train set
+    # ── Gestione sbilanciamento sul solo train set ────────────────────────────
+    #
+    # LOGICA max_per_class (MODIFICATA per dataset 34k finestre):
+    #
+    #   Serie da ≤ 500 campioni  (es. 50ms @ 10kHz):
+    #     → max_per_class = 5000  (~50 MB in RAM, sicuro)
+    #
+    #   Serie da ≤ 2000 campioni (es. 100ms–200ms @ 10kHz):  ← CASO ATTUALE
+    #     → max_per_class = 3000  (~24 MB in RAM, sicuro)
+    #     Era 1000 nella versione precedente: troppo conservativo,
+    #     sprecava ~25k finestre su 27k disponibili nel train.
+    #
+    #   Serie da > 2000 campioni (es. 2s @ 10kHz = 20.000 campioni):
+    #     → max_per_class = 500   (~40 MB in RAM, limite per Hydra)
+    #
+    # Il test set NON viene mai modificato.
+    # ─────────────────────────────────────────────────────────────────────────
     use_class_weight = None
     if strategy == "undersample":
         log.info("")
-        # Con dataset scorrevole (finestre 100ms) i campioni sono molti di più.
-        # max_per_class=1000 è sicuro con serie da 1.000 campioni (100ms @ 10kHz).
-        # Con serie da 20.000 campioni (2s) usare max_per_class=300.
-        n_samples_per_series = X_train.shape[1] if len(X_train) > 0 else 20000
-        max_pc = 1000 if n_samples_per_series <= 2000 else 300
-        log.info("  Serie da %d campioni → max_per_class=%d",
-                 n_samples_per_series, max_pc)
+        n_samples_per_series = X_train.shape[1] if len(X_train) > 0 else 1000
+
+        if n_samples_per_series <= 500:
+            max_pc = 5000
+        elif n_samples_per_series <= 2000:
+            max_pc = 3000   # MODIFICATO: era 1000 — ora sfrutta più dati (24 MB)
+        else:
+            max_pc = 500    # finestre lunghe (≥ 20.000 campioni): limite memoria
+
+        log.info("  Serie da %d campioni (%.0f ms @ %d Hz) → max_per_class=%d",
+                 n_samples_per_series,
+                 n_samples_per_series / FS_HZ * 1000,
+                 FS_HZ,
+                 max_pc)
         X_train, y_train = undersample_train(X_train, y_train, max_per_class=max_pc)
     elif strategy == "class_weight":
         use_class_weight = "balanced"

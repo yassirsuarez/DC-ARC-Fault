@@ -8,7 +8,7 @@ MultiRocketHydra e produce un confronto diretto tra i due classificatori.
 InceptionTime è una rete neurale profonda basata sul modulo Inception di Google,
 progettata specificamente per la classificazione di serie temporali.
 Vantaggi rispetto a MultiRocketHydra:
-  - Esportabile nativamente in ONNX via torch.onnx.export
+  - Esportabile nativamente in ONNX via tf2onnx
   - Deployabile su STM32H7 via X-CUBE-AI senza implementazione C custom
   - Architettura profonda che cattura pattern a scale temporali diverse
 
@@ -18,18 +18,23 @@ per garantire un confronto equo con MultiRocketHydra.
 Uso:
     python train_inceptiontime.py <arc_dataset.npz> [--out <cartella>]
                                   [--multirocket-report <training_report.txt>]
-                                  [--epochs 50] [--batch-size 32]
+                                  [--epochs 150] [--batch-size 32]
 
 Esempio:
-    python train_inceptiontime.py arc_dataset.npz ^
+    python train_inceptiontime.py arc_dataset_new.npz ^
         --out results_inception ^
         --multirocket-report results/training_report.txt
 
 Requisiti:
-    pip install aeon torch scikit-learn matplotlib seaborn
+    pip install aeon tensorflow tf2onnx onnxruntime scikit-learn matplotlib seaborn
 
 Autori: progetto tesi magistrale — Manutenzione e Affidabilità
 Normativa di riferimento: UL 1699B
+
+MODIFICHE rispetto alla versione precedente:
+  - max_per_class alzato da 300 a 3000 (serie da 1000 campioni, ~24 MB)
+  - BATCH_SIZE alzato da 16 a 32 (serie brevi 100ms, memoria gestibile)
+  - Log durata finestra in ms invece di secondi
 """
 
 import argparse
@@ -40,6 +45,8 @@ import sys
 import time
 import warnings
 warnings.filterwarnings("ignore")
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"   # evita conflitto OpenMP su Windows
 
 import numpy as np
 import matplotlib
@@ -68,7 +75,8 @@ log = logging.getLogger(__name__)
 FS_HZ      = 10_000
 TEST_SIZE  = 0.20
 RAND       = 42
-BATCH_SIZE = 16    # batch piccolo per gestire la RAM con serie da 20.000 pt
+BATCH_SIZE = 32    # MODIFICATO: era 16 — alzato perché serie da 1000 campioni (100ms)
+                   # (il valore 16 era pensato per serie da 20.000 campioni)
 
 UL_MIN_DET = 95.0
 UL_MAX_FP  = 5.0
@@ -129,16 +137,23 @@ def threshold_analysis(y_test: np.ndarray, y_proba: np.ndarray) -> float:
     return best_thr
 
 
-def undersample(X: np.ndarray, y: np.ndarray, max_per_class: int = 300):
-    """Undersampling bilanciato — stessa logica di train_classifier.py."""
+def undersample(X: np.ndarray, y: np.ndarray, max_per_class: int = 3000):
+    """
+    Undersampling bilanciato — stessa logica di train_classifier.py.
+
+    MODIFICATO: max_per_class default alzato da 300 a 3000.
+    Con serie da 1000 campioni (100ms @ 10kHz):
+      3000 per classe × 2 × 1000 float32 = ~24 MB  → sicuro in RAM.
+    Il valore 300 era pensato per serie da 20.000 campioni (2s @ 10kHz).
+    """
     n_min = min((y == 0).sum(), (y == 1).sum(), max_per_class)
     rng   = np.random.default_rng(RAND)
     idx0  = rng.choice(np.where(y == 0)[0], size=n_min, replace=False)
     idx1  = rng.choice(np.where(y == 1)[0], size=n_min, replace=False)
     idx   = np.concatenate([idx0, idx1])
     rng.shuffle(idx)
-    log.info("  Undersampling: %d → %d campioni (%d per classe)",
-             len(y), len(idx), n_min)
+    log.info("  Undersampling: %d → %d campioni (%d per classe, max=%d)",
+             len(y), len(idx), n_min, max_per_class)
     return X[idx], y[idx]
 
 
@@ -342,7 +357,6 @@ def _export_inceptiontime_onnx(clf, X_train: np.ndarray, onnx_path: str) -> bool
     # 1. Recupera il modello Keras
     keras_model = getattr(clf, "model_", None)
     if keras_model is None:
-        # Prova attributi alternativi usati in versioni diverse di aeon
         for attr in ["model", "_model", "network_", "_network", "training_model_"]:
             keras_model = getattr(clf, attr, None)
             if keras_model is not None:
@@ -374,7 +388,6 @@ def _export_inceptiontime_onnx(clf, X_train: np.ndarray, onnx_path: str) -> bool
         log.info("  tf2onnx versione: %s", tf2onnx.__version__)
         log.info("  TensorFlow versione: %s", tf.__version__)
 
-        # Specifica input: (batch, canali=1, timepoints)
         input_spec = (
             tf.TensorSpec(
                 shape=(None, 1, n_timepoints),
@@ -417,7 +430,7 @@ def _export_inceptiontime_onnx(clf, X_train: np.ndarray, onnx_path: str) -> bool
     except Exception as e:
         log.error("  Export ONNX fallito: %s", e)
 
-        # Fallback: salva come SavedModel (importabile in STM32Cube.AI)
+        # Fallback: salva come SavedModel
         try:
             saved_dir = onnx_path.replace(".onnx", "_savedmodel")
             keras_model.save(saved_dir)
@@ -427,7 +440,6 @@ def _export_inceptiontime_onnx(clf, X_train: np.ndarray, onnx_path: str) -> bool
             log.error("  Fallback SavedModel fallito: %s", e2)
 
         return False
-
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -446,7 +458,7 @@ def main():
     parser.add_argument("--multirocket-report", default=None,
                         help="Path al training_report.txt di MultiRocketHydra")
     parser.add_argument("--epochs", type=int, default=150,
-                        help="Epoche di training (default: 50)")
+                        help="Epoche di training (default: 150)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                         help=f"Batch size (default: {BATCH_SIZE})")
     parser.add_argument("--test-size", type=float, default=TEST_SIZE)
@@ -463,8 +475,10 @@ def main():
     data = np.load(args.dataset)
     X    = data["X"]
     y    = data["y"]
-    log.info("  X shape: %s  (%.1f s @ %d Hz)", X.shape,
-             X.shape[1] / FS_HZ, FS_HZ)
+
+    # MODIFICATO: log in ms invece di secondi (serie brevi 100ms)
+    log.info("  X shape: %s  (%.1f ms @ %d Hz)",
+             X.shape, X.shape[1] / FS_HZ * 1000, FS_HZ)
     log.info("  y: arco=%d  no_arco=%d",
              int((y == 1).sum()), int((y == 0).sum()))
 
@@ -473,7 +487,7 @@ def main():
     groups    = None
     if os.path.isfile(meta_path):
         import pandas as pd
-        meta = pd.read_csv(meta_path, encoding='latin-1')
+        meta = pd.read_csv(meta_path, encoding="latin-1")
         def _key(fn):
             s   = fn.replace("_Raw Data.mat", "").replace(" Data.mat", "")
             idx = s.lower().rfind("_study")
@@ -488,20 +502,37 @@ def main():
             n_splits=1, test_size=args.test_size, random_state=RAND
         )
         train_idx, test_idx = next(gss.split(X, y, groups=groups))
-        log.info("  Split per gruppo sperimentale")
+        log.info("  Split per gruppo sperimentale (%.0f%%/%.0f%%)",
+                 (1 - args.test_size) * 100, args.test_size * 100)
     else:
         train_idx, test_idx = train_test_split(
             np.arange(len(y)), test_size=args.test_size,
             random_state=RAND, stratify=y
         )
-        log.warning("  Metadati non trovati — split casuale")
+        log.warning("  Metadati non trovati — split casuale (rischio data leakage)")
 
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
-    log.info("  Train: %d  Test: %d", len(y_train), len(y_test))
+    log.info("  Train: %d  (arco=%d, no=%d)",
+             len(y_train), int((y_train==1).sum()), int((y_train==0).sum()))
+    log.info("  Test:  %d  (arco=%d, no=%d)",
+             len(y_test), int((y_test==1).sum()), int((y_test==0).sum()))
 
-    # ── undersampling (stessa logica di train_classifier.py) ─────────────────
-    X_train, y_train = undersample(X_train, y_train, max_per_class=300)
+    # ── undersampling ─────────────────────────────────────────────────────────
+    # MODIFICATO: max_per_class=3000 (era 300)
+    # Con serie da 1000 campioni: 3000×2×1000×4 byte = ~24 MB → sicuro
+    # Il valore 300 era pensato per serie da 20.000 campioni (2s @ 10kHz)
+    n_samples_per_series = X_train.shape[1]
+    if n_samples_per_series <= 500:
+        max_pc = 5000
+    elif n_samples_per_series <= 2000:
+        max_pc = 3000   # ← caso attuale: 100ms @ 10kHz = 1000 campioni
+    else:
+        max_pc = 500
+
+    log.info("  Serie da %d campioni (%.0f ms) → max_per_class=%d",
+             n_samples_per_series, n_samples_per_series / FS_HZ * 1000, max_pc)
+    X_train, y_train = undersample(X_train, y_train, max_per_class=max_pc)
 
     # ── InceptionTime vuole shape (n, n_channels, n_timepoints) ─────────────
     X_tr = X_train[:, np.newaxis, :].astype(np.float32)
@@ -515,13 +546,14 @@ def main():
     log.info("  Epoche:     %d", args.epochs)
     log.info("  Batch size: %d", args.batch_size)
     log.info("  Train:      %d campioni", len(y_train))
-    log.info("  Test:       %d campioni", len(y_test))
+    log.info("  Test:       %d campioni (intero test set, no undersampling)",
+             len(y_test))
 
     try:
         from aeon.classification.deep_learning import InceptionTimeClassifier
     except ImportError as e:
         log.error("InceptionTime non disponibile: %s", e)
-        log.error("Eseguire: pip install aeon[deep_learning] torch")
+        log.error("Eseguire: pip install aeon tensorflow")
         sys.exit(1)
 
     clf = InceptionTimeClassifier(
@@ -581,9 +613,6 @@ def main():
     log.info("  Modello salvato: %s", model_path)
 
     # ── export ONNX via tf2onnx ──────────────────────────────────────────────
-    # InceptionTime usa Keras/TensorFlow internamente — NON PyTorch.
-    # Dopo il fit il modello Keras è in clf.model_
-    # Export: Keras → SavedModel → ONNX tramite tf2onnx
     log.info("")
     log.info("  --- Export ONNX (tf2onnx) ---")
     onnx_path = os.path.join(args.out, "inceptiontime.onnx")
@@ -674,3 +703,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
