@@ -47,7 +47,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── parametri default ─────────────────────────────────────────────────────────
-N_PER_CLASS  = 200   # campioni per classe (200 arco + 200 no-arco = 400 totali)
+N_PER_CLASS  = 100   # campioni per classe (200 arco + 200 no-arco = 400 totali)
                      # ST Edge AI suggerisce almeno 100-200 campioni totali
 RAND_STATE   = 42
 

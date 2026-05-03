@@ -55,13 +55,6 @@ def validazione_generale(n_campioni=200):
     print("-"*40)
     print(f"FEDELTÀ (INT8 vs FP32):  {fidelity:.2f}%")
     
-    if fidelity > 95:
-        print("Stato: OTTIMO - Il modello quantizzato è quasi identico all'originale.")
-    elif fidelity > 85:
-        print("Stato: BUONO - Piccole divergenze accettabili per l'hardware.")
-    else:
-        print("Stato: ATTENZIONE - Perdita di precisione significativa.")
-    print("="*40)
 
 if __name__ == "__main__":
     validazione_generale(n_campioni=10000)
