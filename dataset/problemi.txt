@@ -1,0 +1,136 @@
+Ok, questo script che hai incollato è quello che genera il dataset, e ti spiego subito cosa sta succedendo davvero (senza farti finta che sia “magia buona”):
+
+🔥 COSA FA DAVVERO IL TUO DATASET BUILDER
+
+Tu NON stai creando “34931 segnali diversi”.
+
+Stai creando:
+
+📌 34931 finestre (windows) estratte da segnali più lunghi
+
+Quindi:
+
+1 file .mat → contiene un segnale lungo (es. 4 secondi)
+da ogni segnale → estrai tante finestre sovrapposte
+ogni finestra → diventa un campione del dataset
+
+👉 risultato: il dataset è fatto di pezzi dello stesso segnale, non segnali indipendenti
+
+⚠️ PERCHÉ IL TUO CHECK DICE “POSSIBILE DUPLICAZIONE”
+
+Hai visto:
+
+ratio unicità: 0.8903
+⚠ POSSIBILE DUPLICAZIONE ALTA (leakage risk)
+
+Significa:
+
+31.100 su 34.931 sono unici
+ma 10% sono quasi identici o derivati
+
+👉 motivo:
+le finestre scorrono con STEP_S = 0.05s
+
+quindi:
+
+window 1: campioni 0–1000
+window 2: campioni 500–1500   ← 50% sovrapposti
+window 3: campioni 1000–2000
+
+💥 quindi NON sono indipendenti
+
+🚨 PERCHÉ PRIMA OTTENEVI 0.99 DI ACCURATEZZA
+
+Quando hai visto:
+
+Balanced Accuracy: 0.9903
+
+NON è perché il modello è “Dio”.
+
+È perché:
+
+❗ DATA LEAKAGE implicito
+finestre quasi uguali finiscono in train e test
+il modello vede pattern già visti
+
+👉 quindi impara “a memoria locale”
+
+🧠 QUINDI IL TUO DATASET È:
+
+✔ realistico per simulazione real-time
+❌ NON indipendente statisticamente
+❌ rischio leakage alto
+✔ perfetto per embedded inference
+❌ non perfetto per “benchmark scientifico pulito”
+
+🔥 COME MIGLIORARE DAVVERO (IMPORTANTE)
+
+Se vuoi evitare falsi 99%:
+
+1. SPLIT PER FILE (NON PER FINESTRE)
+
+Devi fare:
+
+TRAIN = file A, B, C
+TEST  = file D, E
+
+NON:
+
+TRAIN = finestre mischiate
+TEST  = finestre mischiate
+2. O SPLIT PER GRUPPI (BEST)
+
+Tipo:
+
+stesso file → NON può stare in train e test
+stesso esperimento → stesso gruppo
+3. AUMENTA STEP (meno overlap)
+
+ora hai:
+
+STEP_S = 0.05
+WINDOW = 0.10
+→ 50% overlap
+
+meglio:
+
+STEP_S = 0.10 (no overlap)
+oppure
+STEP_S = 0.2
+🧨 RISPOSTA DIRETTA ALLA TUA DOMANDA
+
+“sono tutti segnali diversi?”
+
+👉 NO
+
+sono:
+
+🔁 finestre altamente correlate dello stesso segnale
+
+💡 PERCHÉ HYDRA TI HA DATO 0.99
+
+Perché:
+
+feature extraction molto forte (576 feature)
+dataset quasi duplicato
+split non perfetto
+🚀 SE VUOI VERAMENTE “ACCURATEZZA REALISTICA”
+
+ti consiglio:
+
+✔ split per file
+✔ STEP più grande
+✔ test su file mai visti
+✔ zero overlap tra train/test
+
+se vuoi next step serio
+
+posso aiutarti a fare una versione:
+
+🔥 “paper-grade dataset pipeline”
+no leakage
+split per esperimento
+evaluation stile IEEE
+confronto Hydra vs InceptionTime pulito
+
+dimmi e lo facciamo bene davvero

@@ -66,8 +66,8 @@ def main():
     )
     parser.add_argument(
         "--out", "-o",
-        default="./calibration",
-        help="Cartella di output (default: ./calibration)",
+        default="./calibration_inceptiontime",
+        help="Cartella di output (default: ./calibration_inceptiontime)",
     )
     parser.add_argument(
         "--n-per-class",
@@ -147,7 +147,7 @@ def main():
     log.info("    %s", path_npz)
     log.info("    chiavi: 'input', 'X'  shape: %s  dtype: %s  (%.2f MB)",
              X_cal_3d.shape, X_cal_3d.dtype, size_mb_npz)
-    data = np.load("./calibration/calibration_data.npz")
+    data = np.load("./calibration_inceptiontime/calibration_data.npz")
     print(data.files)
 
     # ── formato NPY (alternativo se ST Edge AI non accetta npz) ──────────────

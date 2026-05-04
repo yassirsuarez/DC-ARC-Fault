@@ -35,6 +35,12 @@ Hydra:
 InceptionTime:
   signal → [inception_i.onnx  ×5] → media logit → argmax → 0/1
 
+OPSET aggiornati per ST Edge AI:
+  - Hydra ONNX:       opset 11 → 13 → 17 (prova in ordine crescente)
+  - Ridge ONNX:       opset 17 fisso (skl2onnx)
+  - InceptionTime:    opset 13 (tf2onnx)
+  - Ridge NON va quantizzato con ST Edge AI — usare ridge_weights.h in C
+
 Uso:
   python export_model.py multirockethydra  model_multirockethydra.pkl  dataset.npz  --out ./export_mrh
   python export_model.py hydra             model_hydra.pkl             dataset.npz  --out ./export_hydra
@@ -65,6 +71,16 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger(__name__)
+
+# ── opset compatibili con ST Edge AI ─────────────────────────────────────────
+# ST Edge AI supporta ufficialmente fino a opset 21.
+# Hydra: prova in ordine crescente fino a trovare quello che funziona.
+# Ridge (skl2onnx): usa opset 17 fisso.
+# InceptionTime (tf2onnx): usa opset 13 fisso.
+# NON usare opset 22+ — onnxruntime non lo supporta ancora.
+HYDRA_OPSETS   = (11, 13, 17)   # MODIFICATO: era (13, 16) — aggiunto 17
+RIDGE_OPSET    = 17             # MODIFICATO: era implicito in skl2onnx default
+INCEPTION_OPSET = 13            # invariato — tf2onnx con opset 13
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -209,14 +225,10 @@ def export_multirocket(model, out_dir: str) -> bool:
 
 class _HydraWrapper:
     """
-    Wrapper PyTorch per HydraTransformer compatibile con export ONNX opset 13.
+    Wrapper PyTorch per HydraTransformer compatibile con export ONNX.
 
     Riceve X e diff_X separatamente per evitare torch.diff nel grafo.
-    Usa self.hydra.g come numero di gruppi — non modificare i canali di
-    input prima di questa classe, altrimenti i pesi W non sono compatibili.
-
-    Il SparseScaler è fuso nel forward così da essere incluso nell'ONNX:
-    su STM32 basta un solo modello senza passi post-processing separati.
+    Il SparseScaler è fuso nel forward così da essere incluso nell'ONNX.
     """
 
     @staticmethod
@@ -233,16 +245,15 @@ class _HydraWrapper:
             epsilon = sparse_scaler.epsilon.float()
             mu      = sparse_scaler.mu.float()
             sigma   = sparse_scaler.sigma.float()
-            mask_v  = sparse_scaler.mask  # bool scalar
+            mask_v  = sparse_scaler.mask
             mask    = bool(mask_v)
 
         class HydraONNXWrapper(nn.Module):
             def __init__(self, hydra, eps, mu_, sigma_, use_mask):
                 super().__init__()
-                self.hydra        = hydra
+                self.hydra         = hydra
                 self.num_dilations = hydra.num_dilations
-                self.divisor      = hydra.divisor
-                # Registriamo i parametri scaler come buffer per includerli nell'ONNX
+                self.divisor       = hydra.divisor
                 if eps is not None:
                     self.register_buffer("scaler_epsilon", eps)
                     self.register_buffer("scaler_mu",      mu_)
@@ -253,7 +264,6 @@ class _HydraWrapper:
                     self.has_scaler = False
 
             def forward(self, X, diff_X):
-                # ── Hydra conv ──
                 X_exp      = X.expand(-1, self.hydra.g, -1)
                 diff_X_exp = diff_X.expand(-1, self.hydra.g, -1)
                 results = []
@@ -270,9 +280,8 @@ class _HydraWrapper:
                         results.append((out > 0).float().mean(dim=-1))
                 features = torch.cat(results, dim=-1).view(X.shape[0], -1)
 
-                # ── SparseScaler fuso ──
                 if self.has_scaler:
-                    exponent = 0.25  # valore standard di _SparseScaler in aeon
+                    exponent = 0.25
                     if self.use_mask:
                         features = features ** exponent
                     features = (features - self.scaler_mu) / (
@@ -287,10 +296,16 @@ def export_hydra_onnx(hydra_transform, sparse_scaler, n_tp: int,
                       out_dir: str, onnx_name: str = "hydra.onnx") -> tuple:
     """
     Esporta HydraTransformer (+ SparseScaler fuso) in ONNX.
+
+    MODIFICATO: prova opset in ordine (11, 13, 17) invece di (13, 16).
+    ST Edge AI supporta fino a opset 21 — opset 17 è il più recente sicuro.
+    Il Ridge NON viene esportato per ST Edge AI — usare ridge_weights.h in C.
+
     Ritorna (successo: bool, n_features: int).
     """
     log.info("")
     log.info("=== EXPORT HYDRA (ONNX) → %s ===", onnx_name)
+    log.info("  Opset da provare: %s", HYDRA_OPSETS)
 
     try:
         import torch
@@ -328,7 +343,7 @@ def export_hydra_onnx(hydra_transform, sparse_scaler, n_tp: int,
             (dummy_X, dummy_diff),
             onnx_path,
             export_params=True,
-            opset_version=opset,
+            opset_version=opset,   # MODIFICATO: variabile invece di fisso
             input_names=["input", "input_diff"],
             output_names=["hydra_features"],
             dynamic_axes={
@@ -338,20 +353,35 @@ def export_hydra_onnx(hydra_transform, sparse_scaler, n_tp: int,
             },
         )
 
-    for opset in (13, 16):
+    # MODIFICATO: usa HYDRA_OPSETS = (11, 13, 17) invece di (13, 16)
+    for opset in HYDRA_OPSETS:
         try:
             _do_export(opset)
             size_kb = os.path.getsize(onnx_path) / 1024
             log.info("  ONNX (opset %d): %s  (%.1f KB)", opset, onnx_path, size_kb)
-            log.info("  input        : (batch, 1, %d)", n_tp)
-            log.info("  input_diff   : (batch, 1, %d)", n_tp - 1)
+            log.info("  input         : (batch, 1, %d)", n_tp)
+            log.info("  input_diff    : (batch, 1, %d)", n_tp - 1)
             log.info("  hydra_features: (batch, %d)", n_features)
             log.info("  Nota STM32: diff_X = X[1:] - X[:-1]")
+
+            # Verifica con onnxruntime
+            try:
+                import onnxruntime as rt
+                sess = rt.InferenceSession(onnx_path)
+                feed = {
+                    "input":      dummy_X.numpy(),
+                    "input_diff": dummy_diff.numpy(),
+                }
+                out = sess.run(None, feed)[0]
+                log.info("  Verifica onnxruntime: output shape %s  ✓", out.shape)
+            except Exception as e_rt:
+                log.warning("  Verifica onnxruntime: %s", e_rt)
+
             return True, n_features
         except Exception as e:
             log.warning("  Export opset %d fallito: %s", opset, e)
 
-    log.error("  Export Hydra ONNX fallito su tutti gli opset")
+    log.error("  Export Hydra ONNX fallito su tutti gli opset %s", HYDRA_OPSETS)
     return False, 0
 
 
@@ -362,11 +392,18 @@ def export_hydra_onnx(hydra_transform, sparse_scaler, n_tp: int,
 def export_ridge(clf, n_features_total: int, out_dir: str,
                  prefix: str = "") -> bool:
     """
-    Esporta RidgeClassifierCV in ONNX e header C.
-    prefix: stringa preposta al nome dei file (es. "hydra_" per non sovrascrivere).
+    Esporta RidgeClassifierCV in header C e ONNX.
+
+    IMPORTANTE: il Ridge NON va quantizzato con ST Edge AI.
+    È un semplice dot product — usare direttamente ridge_weights.h in C.
+    L'ONNX è generato solo per documentazione/debug.
+
+    MODIFICATO: opset Ridge impostato a RIDGE_OPSET=17 (era default skl2onnx).
+    skl2onnx con opset 22 causa l'errore 'Opset 22 is under development'.
     """
     log.info("")
     log.info("=== EXPORT RIDGE (%s) ===", prefix or "default")
+    log.info("  NOTA: il Ridge NON va quantizzato in ST Edge AI — usa ridge_weights.h")
 
     if clf is None or not hasattr(clf, "coef_"):
         log.error("  Classificatore Ridge non trovato o non fittato")
@@ -380,7 +417,7 @@ def export_ridge(clf, n_features_total: int, out_dir: str,
     np.save(os.path.join(out_dir, f"{prefix}ridge_coef.npy"),      clf.coef_)
     np.save(os.path.join(out_dir, f"{prefix}ridge_intercept.npy"), clf.intercept_)
 
-    # Header C
+    # Header C — questo è il file da usare su STM32
     coef      = clf.coef_.flatten().astype(np.float32)
     intercept = float(clf.intercept_[0])
     n         = len(coef)
@@ -388,6 +425,7 @@ def export_ridge(clf, n_features_total: int, out_dir: str,
     h_path    = os.path.join(out_dir, f"{prefix}ridge_weights.h")
     with open(h_path, "w") as f:
         f.write(f"/* {prefix}ridge_weights.h — Ridge Classifier per STM32\n")
+        f.write(f" * NON quantizzare con ST Edge AI — è già C puro.\n")
         f.write(f" * score = dot(features, {prefix.upper()}RIDGE_COEF) + {prefix.upper()}RIDGE_INTERCEPT\n")
         f.write(f" * label = score > 0 ? 1 : 0\n */\n\n")
         f.write(f"#ifndef {guard}\n#define {guard}\n\n")
@@ -400,32 +438,32 @@ def export_ridge(clf, n_features_total: int, out_dir: str,
         f.write(f"        score += features[i] * {prefix.upper()}RIDGE_COEF[i];\n")
         f.write(f"    return score > 0.0f ? 1 : 0;\n}}\n\n")
         f.write(f"#endif /* {guard} */\n")
-    log.info("  Header C: %s", h_path)
+    log.info("  Header C: %s  ← usa questo su STM32", h_path)
 
-    # ONNX via skl2onnx
+    # ONNX via skl2onnx con opset fisso (MODIFICATO: target_opset=RIDGE_OPSET)
     try:
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
         from sklearn.linear_model import RidgeClassifier
-        import sklearn
 
         r = RidgeClassifier(alpha=getattr(clf, "alpha_", 1.0))
-        # skl2onnx richiede un modello fittato con classes_:
-        # fit su dati fittizi della dimensione giusta, poi sovrascrivi i pesi
         dummy_X_fit = np.zeros((2, n_features_total), dtype=np.float32)
         dummy_y_fit = clf.classes_.astype(int)
         r.fit(dummy_X_fit, dummy_y_fit)
         r.coef_      = clf.coef_
         r.intercept_ = clf.intercept_
 
+        # MODIFICATO: target_opset=RIDGE_OPSET=17 — evita opset 22 non supportato
         onnx_model = convert_sklearn(
-            r, initial_types=[("float_input", FloatTensorType([None, n_features_total]))]
+            r,
+            initial_types=[("float_input", FloatTensorType([None, n_features_total]))],
+            target_opset=RIDGE_OPSET,
         )
         onnx_path = os.path.join(out_dir, f"{prefix}ridge.onnx")
         with open(onnx_path, "wb") as f:
             f.write(onnx_model.SerializeToString())
-        log.info("  ONNX: %s  (%.1f KB)",
-                 onnx_path, os.path.getsize(onnx_path) / 1024)
+        log.info("  ONNX (opset %d): %s  (%.1f KB) ← solo debug, NON quantizzare",
+                 RIDGE_OPSET, onnx_path, os.path.getsize(onnx_path) / 1024)
     except Exception as e:
         log.warning("  skl2onnx Ridge fallito (header C già OK): %s", e)
 
@@ -441,7 +479,6 @@ def verify_pipeline(model, X_sample: np.ndarray, out_dir: str,
     """
     Verifica che il Ridge manuale (coef_ + intercept_) produca le stesse
     predizioni del modello originale.
-    X_sample deve già essere della lunghezza vista in training.
     """
     log.info("")
     log.info("=== VERIFICA END-TO-END (%s) ===", model_type)
@@ -453,11 +490,9 @@ def verify_pipeline(model, X_sample: np.ndarray, out_dir: str,
         log.info("  Predizioni originali: %s", y_orig.tolist())
     except Exception as e:
         log.error("  model.predict fallito: %s", e)
-        log.warning("  Verifica saltata — controlla che X_sample abbia "
-                    "la stessa lunghezza delle serie di training")
+        log.warning("  Verifica saltata — controlla lunghezza serie")
         return
 
-    # Ridge manuale con feature estratte internamente
     try:
         if model_type == "multirockethydra":
             hydra_t  = model._transform_hydra.transform(X_3d)
@@ -465,12 +500,12 @@ def verify_pipeline(model, X_sample: np.ndarray, out_dir: str,
             rocket_t = model._transform_multirocket.transform(X_3d)
             rocket_s = model._scale_multirocket.transform(rocket_t)
             features = np.hstack([hydra_s, rocket_s]).astype(np.float32)
-        else:  # hydra
+        else:
             ht, ss, _ = [step for _, step in model._clf.steps]
             hydra_t  = ht.transform(X_3d)
             features = ss.transform(hydra_t).astype(np.float32)
 
-        prefix   = "mrh_" if model_type == "multirockethydra" else ""
+        prefix    = "mrh_" if model_type == "multirockethydra" else ""
         coef      = np.load(os.path.join(out_dir, f"{prefix}ridge_coef.npy"))
         intercept = np.load(os.path.join(out_dir, f"{prefix}ridge_intercept.npy"))
         scores    = features @ coef.T + intercept
@@ -481,7 +516,7 @@ def verify_pipeline(model, X_sample: np.ndarray, out_dir: str,
     except Exception as e:
         log.error("  Verifica Ridge manuale fallita: %s", e)
 
-    # Hydra ONNX
+    # Verifica Hydra ONNX con onnxruntime
     for candidate in ("hydra.onnx", "hydra_standalone.onnx"):
         onnx_path = os.path.join(out_dir, candidate)
         if not os.path.isfile(onnx_path):
@@ -508,19 +543,11 @@ def export_inceptiontime(model_path: str, out_dir: str) -> bool:
     """
     Esporta ogni IndividualInceptionClassifier come ONNX separato.
 
-    Struttura:
-      InceptionTimeClassifier.classifiers_[i].model_  → Keras Functional
-      Export: tf2onnx  →  inception_i.onnx  (i = 0..4)
-
-    Su STM32 esegui i 5 modelli e calcola la media dei logit (soft voting).
-
-    Genera anche inception_ensemble_predict.h con macro C che descrive
-    la struttura dell'ensemble.
+    MODIFICATO: opset fisso a INCEPTION_OPSET=13 (invariato, tf2onnx).
     """
     log.info("")
-    log.info("=== EXPORT INCEPTIONTIME ===")
+    log.info("=== EXPORT INCEPTIONTIME (opset %d) ===", INCEPTION_OPSET)
 
-    # tf2onnx richiede TensorFlow: verifica prima
     try:
         import tensorflow as tf
         import tf2onnx
@@ -531,26 +558,12 @@ def export_inceptiontime(model_path: str, out_dir: str) -> bool:
         log.error("  Installa: pip install tensorflow tf2onnx")
         return False
 
-    # Carica il modello (ora tf è disponibile, non serve stub)
     log.info("  Caricamento modello: %s", model_path)
     with open(model_path, "rb") as f:
         model = pickle.load(f)
 
     n_classifiers = len(model.classifiers_)
     log.info("  Ensemble: %d classificatori", n_classifiers)
-    log.info("  n_epochs: %d  batch_size: %d  depth: %d",
-             model.n_epochs, model.batch_size, model.depth)
-
-    # Parametri architettura (per documentazione nel header C)
-    arch = {
-        "n_filters":      model.n_filters,
-        "bottleneck_size": model.bottleneck_size,
-        "depth":          model.depth,
-        "kernel_size":    model.kernel_size,
-        "use_residual":   model.use_residual,
-        "use_bottleneck": model.use_bottleneck,
-    }
-    log.info("  Architettura: %s", arch)
 
     exported = []
     for i, clf_i in enumerate(model.classifiers_):
@@ -561,30 +574,29 @@ def export_inceptiontime(model_path: str, out_dir: str) -> bool:
 
         onnx_path = os.path.join(out_dir, f"inception_{i}.onnx")
         try:
-            # Ricava input_shape dal modello
             input_shape = getattr(clf_i, "input_shape", None)
             if input_shape is None:
                 try:
-                    input_shape = keras_model.input_shape[1:]  # (T, 1)
+                    input_shape = keras_model.input_shape[1:]
                 except Exception:
                     input_shape = (None, 1)
 
-            # Spec di input per tf2onnx: (batch, T, channels)
             spec = (tf.TensorSpec(
                 shape=(None,) + tuple(input_shape),
                 dtype=tf.float32,
                 name="input"
             ),)
 
+            # MODIFICATO: opset=INCEPTION_OPSET fisso (13)
             onnx_model_proto, _ = tf2onnx.convert.from_keras(
                 keras_model,
                 input_signature=spec,
-                opset=13,
+                opset=INCEPTION_OPSET,
                 output_path=onnx_path,
             )
             size_kb = os.path.getsize(onnx_path) / 1024
-            log.info("  [%d] inception_%d.onnx  (%.1f KB)  input_shape=%s",
-                     i, i, size_kb, input_shape)
+            log.info("  [%d] inception_%d.onnx  (%.1f KB)  opset=%d",
+                     i, i, size_kb, INCEPTION_OPSET)
             exported.append(i)
         except Exception as e:
             log.error("  [%d] Export fallito: %s", i, e)
@@ -598,27 +610,17 @@ def export_inceptiontime(model_path: str, out_dir: str) -> bool:
     n_exp  = len(exported)
     with open(h_path, "w") as f:
         f.write("/* inception_ensemble.h\n")
-        f.write(" * Ensemble InceptionTime per STM32H7 via X-CUBE-AI\n")
-        f.write(" * Uso: carica inception_0..4.onnx, calcola media dei logit,\n")
-        f.write(" *      label = argmax(mean_logits)\n */\n\n")
+        f.write(" * Ensemble InceptionTime per STM32H7 via X-CUBE-AI\n */\n\n")
         f.write("#ifndef INCEPTION_ENSEMBLE_H\n#define INCEPTION_ENSEMBLE_H\n\n")
         f.write(f"#define INCEPTION_N_MODELS   {n_exp}\n")
         f.write(f"#define INCEPTION_N_CLASSES  {model.n_classes_}\n")
         f.write(f"#define INCEPTION_DEPTH      {model.depth}\n")
         f.write(f"#define INCEPTION_N_FILTERS  {model.n_filters}\n")
         f.write(f"#define INCEPTION_KERNEL_SIZE {model.kernel_size}\n\n")
-        f.write("/* Nomi file ONNX da caricare in X-CUBE-AI */\n")
         f.write("static const char* INCEPTION_MODEL_FILES[] = {\n")
         for i in exported:
             f.write(f'  "inception_{i}.onnx",\n')
         f.write("};\n\n")
-        f.write("/* Inferenza ensemble: media dei logit softmax\n")
-        f.write(" * float logits[INCEPTION_N_MODELS][INCEPTION_N_CLASSES];\n")
-        f.write(" * for (int m=0; m<INCEPTION_N_MODELS; m++) run_model(m, input, logits[m]);\n")
-        f.write(" * float mean[INCEPTION_N_CLASSES] = {0};\n")
-        f.write(" * for (int m=0; m<INCEPTION_N_MODELS; m++)\n")
-        f.write(" *   for (int c=0; c<INCEPTION_N_CLASSES; c++) mean[c] += logits[m][c];\n")
-        f.write(" * int label = mean[0] > mean[1] ? 0 : 1;\n */\n\n")
         f.write("#endif /* INCEPTION_ENSEMBLE_H */\n")
     log.info("  Header ensemble: %s", h_path)
 
@@ -640,13 +642,8 @@ def run_multirockethydra(model_path: str, dataset_path: str, out_dir: str):
         model = pickle.load(f)
     log.info("  Tipo: %s", type(model).__name__)
 
-    # Lunghezza serie training — ricavata dai metadata, non dal dataset
     n_tp_train = get_train_n_timepoints(model)
-
-    # Carica campioni troncati alla lunghezza di training per verifica
     X_sample, _ = load_sample(dataset_path, n_timepoints=n_tp_train)
-
-    # n_tp per il grafo ONNX: usa la lunghezza di training (non quella del dataset)
     n_tp_onnx = n_tp_train if n_tp_train is not None else X_sample.shape[-1]
 
     rocket_ok           = export_multirocket(model, out_dir)
@@ -656,11 +653,9 @@ def run_multirockethydra(model_path: str, dataset_path: str, out_dir: str):
         n_tp_onnx, out_dir, "hydra.onnx"
     )
 
-    # Feature totali: ricavate direttamente dai coef_ del Ridge (affidabile)
-    n_feat_ridge = model.classifier.coef_.shape[-1]  # 56896
-    # Calcola split Hydra vs MultiRocket dai SparseScaler/StandardScaler
-    n_feat_hydra   = model._scale_hydra.mu.shape[0]       # 7168
-    n_feat_rocket  = model._scale_multirocket.mean_.shape[0]  # 49728
+    n_feat_ridge  = model.classifier.coef_.shape[-1]
+    n_feat_hydra  = model._scale_hydra.mu.shape[0]
+    n_feat_rocket = model._scale_multirocket.mean_.shape[0]
     log.info("")
     log.info("  Feature Ridge totali: %d  (Hydra=%d + MultiRocket=%d)",
              n_feat_ridge, n_feat_hydra, n_feat_rocket)
@@ -669,10 +664,14 @@ def run_multirockethydra(model_path: str, dataset_path: str, out_dir: str):
     verify_pipeline(model, X_sample, out_dir, model_type="multirockethydra")
 
     _print_summary("MultiRocketHydra", out_dir, {
-        "MultiRocket (.npz + .h + scaler)": rocket_ok,
-        "Hydra (.onnx, SparseScaler fuso)": hydra_ok,
-        "Ridge (.onnx + .h + .npy)":        ridge_ok,
+        "MultiRocket (.npz + .h + scaler)":          rocket_ok,
+        "Hydra (.onnx opset≤17, SparseScaler fuso)": hydra_ok,
+        "Ridge (.h C puro + .onnx debug)":            ridge_ok,
     })
+
+    log.info("")
+    log.info("  ST Edge AI: quantizza SOLO hydra.onnx con calibration_data_hydra.npz")
+    log.info("  Ridge:      usa mrh_ridge_weights.h direttamente in C (NO quantizzazione)")
 
 
 def run_hydra(model_path: str, dataset_path: str, out_dir: str):
@@ -704,7 +703,6 @@ def run_hydra(model_path: str, dataset_path: str, out_dir: str):
         n_tp_onnx, out_dir, "hydra_standalone.onnx"
     )
 
-    # n_feat dal coef_ del Ridge (12288) — non serve trasformare campioni
     n_features = clf.coef_.shape[-1]
     log.info("  Feature Ridge (da coef_): %d", n_features)
 
@@ -712,23 +710,16 @@ def run_hydra(model_path: str, dataset_path: str, out_dir: str):
     verify_pipeline(model, X_sample, out_dir, model_type="hydra")
 
     _print_summary("HydraClassifier", out_dir, {
-        "Hydra standalone (.onnx, SparseScaler fuso)": hydra_ok,
-        "Ridge (.onnx + .h + .npy)":                   ridge_ok,
+        "Hydra standalone (.onnx opset≤17, SparseScaler fuso)": hydra_ok,
+        "Ridge (.h C puro + .onnx debug)":                       ridge_ok,
     })
+
+    log.info("")
+    log.info("  ST Edge AI: quantizza SOLO hydra_standalone.onnx")
+    log.info("  Ridge:      usa ridge_weights.h direttamente in C (NO quantizzazione)")
 
 
 def run_inceptiontime(model_path: str, dataset_path: str, out_dir: str):
-    """
-    Export completo per InceptionTimeClassifier.
-
-    Struttura:
-      model.classifiers_[0..4].model_  →  Keras Functional
-    Richiede: tensorflow + tf2onnx
-
-    File prodotti:
-      inception_0.onnx .. inception_4.onnx
-      inception_ensemble.h
-    """
     log.info("━" * 60)
     log.info("INCEPTIONTIME CLASSIFIER")
     log.info("━" * 60)
@@ -751,7 +742,7 @@ def _print_summary(name: str, out_dir: str, results: dict):
     log.info("RIEPILOGO  —  %s", name)
     log.info("=" * 60)
     for label, ok in results.items():
-        log.info("  %-45s %s", label, "✓" if ok else "✗")
+        log.info("  %-50s %s", label, "✓" if ok else "✗")
     log.info("")
     log.info("File in: %s", out_dir)
     for fname in sorted(os.listdir(out_dir)):
@@ -775,26 +766,22 @@ def main():
             "  python export_model.py multirockethydra model_multirockethydra.pkl arc_dataset.npz --out ./export_mrh\n"
             "  python export_model.py hydra             model_hydra.pkl            arc_dataset.npz --out ./export_hydra\n"
             "  python export_model.py inceptiontime     model_inceptiontime.pkl    arc_dataset.npz --out ./export_it\n"
+            "\n"
+            "Opset utilizzati:\n"
+            f"  Hydra:         {HYDRA_OPSETS} (prova in ordine)\n"
+            f"  Ridge:         {RIDGE_OPSET} (fisso, solo debug — NON quantizzare)\n"
+            f"  InceptionTime: {INCEPTION_OPSET} (fisso)\n"
         ),
     )
     parser.add_argument(
         "model_type",
         choices=["multirockethydra", "hydra", "inceptiontime"],
-        help="Tipo di modello: multirockethydra | hydra | inceptiontime",
+        help="Tipo di modello",
     )
-    parser.add_argument(
-        "model",
-        help="Percorso al file .pkl del modello",
-    )
-    parser.add_argument(
-        "dataset",
-        help="Percorso al file .npz del dataset (chiavi: X, y)",
-    )
-    parser.add_argument(
-        "--out", "-o",
-        default="./export",
-        help="Cartella di output (default: ./export)",
-    )
+    parser.add_argument("model",   help="Percorso al file .pkl del modello")
+    parser.add_argument("dataset", help="Percorso al file .npz del dataset")
+    parser.add_argument("--out", "-o", default="./export",
+                        help="Cartella di output (default: ./export)")
     args = parser.parse_args()
 
     for p in [args.model, args.dataset]:
