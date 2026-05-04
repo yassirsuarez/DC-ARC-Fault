@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-export_hydra_only.py
+export_hydra.py
 ====================
 Export SOLO modello Hydra per STM32H7
-
-✔ supporta checkpoint dict:
-   {
-     "hydra_state_dict": ...,
-     "ridge": ...
-   }
+✔ Fix dim=2 (no Squeeze bug)
+✔ Opset 13 (ST Edge AI compatibile)  
+✔ Verifica numerica PyTorch vs ONNX
+✔ Shape statica per STM32 (batch=1)
 """
 
 import os
@@ -24,13 +22,12 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
-# HYDRA ARCH (DEVE MATCHARE IL TRAINING)
+# HYDRA ARCH
 # ─────────────────────────────────────────────
 class HydraFeatureExtractor(nn.Module):
     def __init__(self, n_kernels=32, kernel_sizes=[3, 5, 9], dilations=[1, 2, 4]):
         super().__init__()
         self.convs = nn.ModuleList()
-
         for k in kernel_sizes:
             for d in dilations:
                 self.convs.append(
@@ -44,21 +41,19 @@ class HydraFeatureExtractor(nn.Module):
                 )
 
     def forward(self, x):
-        # usato durante il training: x è (batch, T)
         x = x.unsqueeze(1)
         return self._extract(x)
 
     def forward_no_unsqueeze(self, x):
-        # usato per ONNX export: x è già (batch, 1, T)
         return self._extract(x)
 
     def _extract(self, x):
         feats = []
         for conv in self.convs:
-            y = torch.relu(conv(x))
-            feats.append(torch.max(y, dim=-1).values)
-            feats.append(torch.mean(y, dim=-1))
-        return torch.cat(feats, dim=1)
+            y = torch.relu(conv(x))          # (B, n_kernels, T)
+            feats.append(y.max(dim=2).values) # (B, n_kernels) — FIX: dim=2
+            feats.append(y.mean(dim=2))       # (B, n_kernels) — FIX: dim=2
+        return torch.cat(feats, dim=1)        # (B, n_features)
 
 
 # ─────────────────────────────────────────────
@@ -73,97 +68,175 @@ class HydraONNXWrapper(torch.nn.Module):
 
 # ─────────────────────────────────────────────
 def export_hydra_onnx(hydra, n_tp, out_dir):
-    import torch.onnx
+    import onnx
+    import onnxruntime as ort
 
     hydra.eval()
-
     wrapper = HydraONNXWrapper(hydra)
     wrapper.eval()
 
     dummy = torch.zeros(1, 1, n_tp)
+    path  = os.path.join(out_dir, "hydra.onnx")
 
-    path = os.path.join(out_dir, "hydra.onnx")
-
+    # ── EXPORT con shape statica (batch=1 fisso per STM32) ──
     torch.onnx.export(
         wrapper,
         dummy,
         path,
-        opset_version=17,
+        opset_version=13,
         input_names=["input"],
         output_names=["features"],
-        dynamic_axes={"input": {0: "batch"}, "features": {0: "batch"}}
+        # Niente dynamic_axes → shape completamente statica
+        # ST Edge AI preferisce shape fisse per la quantizzazione
+        do_constant_folding=True,
+        export_params=True,
     )
 
-    log.info(f"✔ Hydra ONNX: {path}")
+    # ── VERIFICA STRUTTURA GRAFO ──
+    model_onnx = onnx.load(path)
+    onnx.checker.check_model(model_onnx)
+    log.info(f"✔ ONNX checker: OK")
+
+    # Controlla che non ci siano nodi Squeeze problematici
+    squeeze_nodes = [n for n in model_onnx.graph.node if n.op_type == "Squeeze"]
+    if squeeze_nodes:
+        log.warning(f"⚠ Trovati {len(squeeze_nodes)} nodi Squeeze — potrebbero causare problemi")
+        for node in squeeze_nodes:
+            log.warning(f"  Squeeze: inputs={list(node.input)}")
+    else:
+        log.info("✔ Nessun nodo Squeeze — grafo pulito")
+
+    # ── VERIFICA NUMERICA PyTorch vs ONNX ──
+    with torch.no_grad():
+        pt_out = wrapper(dummy).numpy()
+
+    sess    = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+    ort_out = sess.run(None, {"input": dummy.numpy()})[0]
+
+    max_diff = np.abs(pt_out - ort_out).max()
+    rel_diff = max_diff / (np.abs(pt_out).max() + 1e-8)
+
+    log.info(f"✔ Verifica numerica:")
+    log.info(f"  Max diff assoluta:  {max_diff:.2e}")
+    log.info(f"  Max diff relativa:  {rel_diff:.2e}")
+
+    if max_diff > 1e-4:
+        log.warning("⚠ Differenza numerica alta — controlla l'architettura")
+    else:
+        log.info("✔ Output PyTorch ≈ Output ONNX — export corretto")
+
+    # ── INFO GRAFO ──
+    log.info(f"\n── Info ONNX ──")
+    log.info(f"  Input:   {sess.get_inputs()[0].name}  {sess.get_inputs()[0].shape}")
+    log.info(f"  Output:  {sess.get_outputs()[0].name} {sess.get_outputs()[0].shape}")
+    log.info(f"✔ Hydra ONNX salvato: {path}")
+
+    return sess.get_outputs()[0].shape[-1]  # restituisce n_features
 
 
 # ─────────────────────────────────────────────
 def export_ridge_header(clf, out_dir):
-    coef = clf.coef_.flatten().astype(np.float32)
+    coef      = clf.coef_.flatten().astype(np.float32)
     intercept = float(clf.intercept_[0])
-
-    path = os.path.join(out_dir, "ridge_weights.h")
+    path      = os.path.join(out_dir, "ridge_weights.h")
 
     with open(path, "w") as f:
         f.write("#ifndef RIDGE_WEIGHTS_H\n#define RIDGE_WEIGHTS_H\n\n")
         f.write(f"#define N_FEATURES {len(coef)}\n\n")
         f.write(f"static const float RIDGE_INTERCEPT = {intercept}f;\n\n")
-
         f.write("static const float RIDGE_COEF[] = {\n")
         for i, v in enumerate(coef):
             f.write(f"{v}f")
             if i != len(coef) - 1:
                 f.write(", ")
         f.write("\n};\n\n")
-
-        f.write("""
-static inline int ridge_predict(const float* x) {
+        f.write("""static inline int ridge_predict(const float* x) {
     float score = RIDGE_INTERCEPT;
     for (int i = 0; i < N_FEATURES; i++)
         score += x[i] * RIDGE_COEF[i];
     return score > 0.0f ? 1 : 0;
 }
-#endif
+
+#endif /* RIDGE_WEIGHTS_H */
 """)
 
-    log.info(f"✔ Ridge header: {path}")
+    log.info(f"✔ Ridge header: {path}  ({len(coef)} features)")
+
+
+# ─────────────────────────────────────────────
+def export_calibration_dataset(dataset_path, n_tp, out_dir, n_per_class=200):
+    data  = np.load(dataset_path)
+    X     = data["X"].astype(np.float32)
+    y     = data["y"]
+
+    rng  = np.random.default_rng(42)
+    idx0 = rng.choice(np.where(y == 0)[0], min(n_per_class, (y==0).sum()), replace=False)
+    idx1 = rng.choice(np.where(y == 1)[0], min(n_per_class, (y==1).sum()), replace=False)
+    idx  = np.concatenate([idx0, idx1])
+    rng.shuffle(idx)
+
+    X_cal = X[idx]                                    # (N, 1000)
+    X_4d  = X_cal[:, np.newaxis, np.newaxis, :]       # (N, 1, 1, 1000) ← FIX ST Edge AI
+
+    path = os.path.join(out_dir, "calibration_hydra.npz")
+    np.savez(path, input=X_4d)
+
+    log.info(f"✔ Calibration dataset: {path}")
+    log.info(f"  Shape: {X_4d.shape}  (label=0: {len(idx0)}, label=1: {len(idx1)})")
 
 
 # ─────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("model")
-    parser.add_argument("dataset")
-    parser.add_argument("--out", default="export_hydra")
+    parser.add_argument("model",   help="hydra_bundle.pkl")
+    parser.add_argument("dataset", help="arc_dataset_new.npz")
+    parser.add_argument("--out",   default="export_hydra")
+    parser.add_argument("--n-cal", type=int, default=200,
+                        help="Campioni per classe nel dataset di calibrazione")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
-    # LOAD
+    # ── LOAD ──
     with open(args.model, "rb") as f:
         model = pickle.load(f)
 
-    print("MODEL TYPE:", type(model))
+    log.info(f"Model type: {type(model)}")
     if isinstance(model, dict):
-        print("MODEL KEYS:", model.keys())
+        log.info(f"Model keys: {list(model.keys())}")
 
     data = np.load(args.dataset)
-    X = data["X"]
+    X    = data["X"]
     n_tp = X.shape[-1]
+    log.info(f"Dataset: {X.shape}  →  n_tp={n_tp}")
 
-    # ─────────────────────────────
-    # FIX CORE (IL TUO CASO)
-    # ─────────────────────────────
+    # ── LOAD HYDRA + RIDGE ──
     hydra = HydraFeatureExtractor()
     hydra.load_state_dict(model["hydra_state_dict"])
-
     clf = model["ridge"]
 
     # ── EXPORT ──
-    export_hydra_onnx(hydra, n_tp, args.out)
+    log.info("\n── Export Hydra ONNX ──")
+    n_features = export_hydra_onnx(hydra, n_tp, args.out)
+
+    log.info("\n── Export Ridge Header ──")
     export_ridge_header(clf, args.out)
 
+    log.info("\n── Calibration Dataset ──")
+    export_calibration_dataset(args.dataset, n_tp, args.out, args.n_cal)
+
+    # ── SANITY CHECK: n_features del Ridge deve matchare Hydra ──
+    ridge_n = clf.coef_.shape[-1]
+    if n_features != ridge_n:
+        log.error(f"✘ MISMATCH: Hydra produce {n_features} features, Ridge si aspetta {ridge_n}!")
+    else:
+        log.info(f"\n✔ Feature match: Hydra={n_features} == Ridge={ridge_n}")
+
     log.info("\n✔ EXPORT COMPLETATO")
+    log.info(f"  Output: {args.out}/")
+    log.info(f"    hydra.onnx")
+    log.info(f"    ridge_weights.h")
+    log.info(f"    calibration_hydra.npz")
 
 
 if __name__ == "__main__":
