@@ -22,9 +22,9 @@ Formati di output:
   - calibration_info.txt      riepilogo del dataset
 
 Uso:
-    python generate_calibration_dataset.py <arc_dataset_new.npz>
-    python generate_calibration_dataset.py <arc_dataset_new.npz> --n-per-class 300
-    python generate_calibration_dataset.py <arc_dataset_new.npz> --out <cartella>
+    python generate_calibration_dataset.py <arc_dataset_train.npz>
+    python generate_calibration_dataset.py <arc_dataset_train.npz> --n-per-class 300
+    python generate_calibration_dataset.py <arc_dataset_train.npz> --out <cartella>
 
 Requisiti:
     pip install numpy
@@ -62,7 +62,7 @@ def main():
     )
     parser.add_argument(
         "dataset",
-        help="Percorso al file arc_dataset_new.npz",
+        help="Percorso al file arc_dataset_train.npz",
     )
     parser.add_argument(
         "--out", "-o",

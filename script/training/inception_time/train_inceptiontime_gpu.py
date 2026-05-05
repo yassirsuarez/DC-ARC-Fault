@@ -2,13 +2,13 @@
 """
 train_inceptiontime.py
 ======================
-Addestra InceptionTime sullo stesso dataset e split usati per
-MultiRocketHydra e produce un confronto diretto tra i due classificatori.
+Addestra InceptionTime su dataset arc fault detection e produce
+metriche UL1699B, grafici e export ONNX (dinamico + statico).
 
 BACKEND: tsai + PyTorch  (NON aeon+TensorFlow)
   - Compatibile con CUDA 13.x e RTX 4060
   - Training su GPU automatico se disponibile
-  - Export ONNX nativo via torch.onnx.export (non serve TensorFlow)
+  - Export ONNX nativo via torch.onnx.export
 
 FIX: usa Learner diretto invece di TSClassifier per evitare il bug
      numpy.object_ causato dalla reinizializzazione interna dei dati.
@@ -18,14 +18,8 @@ Export ONNX:
   - inceptiontime_static.onnx shape fissa     ← ST Edge AI quantizzazione INT8
 
 Uso:
-    python train_inceptiontime.py <arc_dataset_new.npz> [--out <cartella>]
-                                  [--multirocket-report <training_report.txt>]
+    python train_inceptiontime.py [--out <cartella>]
                                   [--epochs 50] [--batch-size 64]
-
-Esempio:
-    python train_inceptiontime.py arc_dataset_new.npz ^
-        --out risultati_inception ^
-        --multirocket-report risultati/training_report.txt
 
 Requisiti:
     pip install tsai torch scikit-learn matplotlib seaborn onnxruntime
@@ -49,7 +43,6 @@ import seaborn as sns
 
 import torch
 
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.metrics import (
     balanced_accuracy_score, classification_report,
     confusion_matrix, f1_score,
@@ -66,9 +59,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# ── path dataset ──────────────────────────────────────────────────────────────
+DATASET_TRAIN = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_train.npz"
+DATASET_TEST  = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz"
+META_TRAIN    = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_meta_train.csv"
+META_TEST     = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_meta_test.csv"
+
 # ── costanti ──────────────────────────────────────────────────────────────────
 FS_HZ      = 10_000
-TEST_SIZE  = 0.20
 RAND       = 42
 BATCH_SIZE = 64    # batch grande per sfruttare la GPU (RTX 4060 8GB VRAM)
 
@@ -296,7 +294,6 @@ def export_onnx(learn, n_timepoints: int, onnx_path: str,
         log.info("  Input:  (batch, 1, %d)  float32", n_timepoints)
         log.info("  Output: (batch, 2)      float32")
 
-        # Verifica con onnxruntime
         try:
             import onnxruntime as rt
             sess     = rt.InferenceSession(onnx_path)
@@ -351,7 +348,6 @@ def export_onnx_static(learn, n_timepoints: int, onnx_path: str,
         log.info("  Output fisso: (%d, 2)      float32", batch_size)
         log.info("  → usa questo file in ST Edge AI per la quantizzazione INT8")
 
-        # Verifica con onnxruntime
         try:
             import onnxruntime as rt
             sess     = rt.InferenceSession(onnx_path)
@@ -457,109 +453,31 @@ def plot_results(y_test, y_pred, y_proba, out_dir):
     log.info("  Grafico risultati salvato: %s", path)
 
 
-def plot_comparison(mr: dict, it: dict, out_dir: str):
-    """Grafico di confronto MultiRocketHydra vs InceptionTime."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle("Confronto — MultiRocketHydra vs InceptionTime", fontsize=13)
-
-    colors = ["steelblue", "darkorange"]
-    labels = ["MultiRocketHydra", "InceptionTime"]
-
-    ax = axes[0]
-    metric_names = ["Bal.Acc", "F1", "AUC", "Det%/100", "1-FP%"]
-    x = np.arange(len(metric_names))
-    w = 0.35
-    for i, r in enumerate([mr, it]):
-        vals = [
-            r["balanced_accuracy"],
-            r["f1_arc"],
-            r.get("roc_auc", 0) or 0,
-            r["detection_rate_pct"] / 100,
-            1 - r["false_positive_rate_pct"] / 100,
-        ]
-        ax.bar(x + (i - 0.5) * w, vals, w,
-               label=labels[i], color=colors[i], alpha=0.85)
-    ax.axhline(0.95, color="red", ls="--", lw=1, label="95% UL1699B")
-    ax.set_xticks(x); ax.set_xticklabels(metric_names, fontsize=9)
-    ax.set_ylim(0.8, 1.02); ax.legend(fontsize=8); ax.grid(alpha=0.3)
-    ax.set_title("Confronto metriche")
-
-    for col, (r, label) in enumerate([(mr, "MultiRocketHydra"),
-                                       (it, "InceptionTime")]):
-        ax = axes[col + 1]
-        if r.get("confusion_matrix") is not None:
-            sns.heatmap(r["confusion_matrix"], annot=True, fmt="d",
-                        cmap="Blues" if col == 0 else "Oranges", ax=ax,
-                        xticklabels=["No arco", "Arco"],
-                        yticklabels=["No arco", "Arco"])
-            ax.set_title(label)
-            ax.set_ylabel("Reale"); ax.set_xlabel("Predetto")
-        else:
-            ax.text(0.5, 0.5, f"{label}\n(dati non disponibili)",
-                    ha="center", va="center", transform=ax.transAxes)
-            ax.axis("off")
-
-    plt.tight_layout()
-    path = os.path.join(out_dir, "confronto_inception_vs_multirocket.png")
-    plt.savefig(path, dpi=130, bbox_inches="tight")
-    plt.close()
-    log.info("  Grafico confronto salvato: %s", path)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Carica risultati MultiRocketHydra dal report testuale
-# ══════════════════════════════════════════════════════════════════════════════
-
-def load_multirocket_results(report_path: str) -> dict | None:
-    """Legge training_report.txt e restituisce le metriche come dict."""
-    if not report_path or not os.path.isfile(report_path):
-        return None
-    results = {}
-    try:
-        with open(report_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if ": " in line:
-                    k, v = line.split(": ", 1)
-                    k = k.strip(); v = v.strip()
-                    try:
-                        results[k] = float(v)
-                    except ValueError:
-                        if v == "True":    results[k] = True
-                        elif v == "False": results[k] = False
-                        else:              results[k] = v
-        log.info("Risultati MultiRocketHydra caricati da: %s", report_path)
-        return results
-    except Exception as e:
-        log.warning("Impossibile leggere report MultiRocketHydra: %s", e)
-        return None
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Training InceptionTime (tsai/PyTorch) + confronto MultiRocketHydra",
+        description="Training InceptionTime (tsai/PyTorch) con metriche UL1699B",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("dataset",
-                        help="Percorso al file arc_dataset_new.npz")
+    parser.add_argument("--train", default=DATASET_TRAIN,
+                        help=f"Path dataset train .npz (default: {DATASET_TRAIN})")
+    parser.add_argument("--test",  default=DATASET_TEST,
+                        help=f"Path dataset test .npz  (default: {DATASET_TEST})")
     parser.add_argument("--out", "-o", default="./risultati_inception",
                         help="Cartella output (default: ./risultati_inception)")
-    parser.add_argument("--multirocket-report", default=None,
-                        help="Path al training_report.txt di MultiRocketHydra")
     parser.add_argument("--epochs", type=int, default=50,
                         help="Epoche di training (default: 50)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                         help=f"Batch size GPU (default: {BATCH_SIZE})")
-    parser.add_argument("--test-size", type=float, default=TEST_SIZE)
     args = parser.parse_args()
 
-    if not os.path.isfile(args.dataset):
-        log.error("File non trovato: %s", args.dataset)
-        sys.exit(1)
+    for path, label in [(args.train, "TRAIN"), (args.test, "TEST")]:
+        if not os.path.isfile(path):
+            log.error("File %s non trovato: %s", label, path)
+            sys.exit(1)
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -576,51 +494,20 @@ def main():
         log.warning("  pip install torch --index-url https://download.pytorch.org/whl/cu121")
 
     # ── carica dataset ────────────────────────────────────────────────────────
-    log.info("Caricamento dataset: %s", args.dataset)
-    data = np.load(args.dataset)
-    X    = data["X"]
-    y    = data["y"]
-    log.info("  X shape: %s  (%.1f ms @ %d Hz)",
-             X.shape, X.shape[1] / FS_HZ * 1000, FS_HZ)
-    log.info("  y: arco=%d  no_arco=%d",
-             int((y == 1).sum()), int((y == 0).sum()))
+    log.info("Caricamento dataset TRAIN: %s", args.train)
+    data_tr = np.load(args.train)
+    X_train = data_tr["X"]
+    y_train = data_tr["y"]
 
-    # ── split identico a train_classifier.py ─────────────────────────────────
-    meta_path = args.dataset.replace("arc_dataset_new.npz",
-                                     "arc_dataset_meta_new.csv")
-    groups = None
-    if os.path.isfile(meta_path):
-        import pandas as pd
-        meta = pd.read_csv(meta_path, encoding="latin-1")
-        def _key(fn):
-            s   = fn.replace("_Raw Data.mat", "").replace(" Data.mat", "")
-            idx = s.lower().rfind("_study")
-            return s[:idx] if idx > 0 else s
-        meta["exp_key"] = meta["filename"].apply(_key)
-        unique_keys     = {k: i for i, k in enumerate(meta["exp_key"].unique())}
-        groups          = meta["exp_key"].map(unique_keys).values
-        log.info("  Gruppi sperimentali: %d", len(unique_keys))
+    log.info("Caricamento dataset TEST: %s", args.test)
+    data_te = np.load(args.test)
+    X_test  = data_te["X"]
+    y_test  = data_te["y"]
 
-    if groups is not None:
-        gss = GroupShuffleSplit(
-            n_splits=1, test_size=args.test_size, random_state=RAND
-        )
-        train_idx, test_idx = next(gss.split(X, y, groups=groups))
-        log.info("  Split per gruppo sperimentale (%.0f%%/%.0f%%)",
-                 (1 - args.test_size) * 100, args.test_size * 100)
-    else:
-        train_idx, test_idx = train_test_split(
-            np.arange(len(y)), test_size=args.test_size,
-            random_state=RAND, stratify=y,
-        )
-        log.warning("  Metadati non trovati — split casuale (rischio data leakage)")
-
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, y_test = y[train_idx], y[test_idx]
     log.info("  Train: %d  (arco=%d, no=%d)",
-             len(y_train), int((y_train==1).sum()), int((y_train==0).sum()))
+             len(y_train), int((y_train == 1).sum()), int((y_train == 0).sum()))
     log.info("  Test:  %d  (arco=%d, no=%d)",
-             len(y_test),  int((y_test==1).sum()),  int((y_test==0).sum()))
+             len(y_test),  int((y_test  == 1).sum()), int((y_test  == 0).sum()))
 
     # ── undersampling ─────────────────────────────────────────────────────────
     n_samples_per_series = X_train.shape[1]
@@ -697,12 +584,11 @@ def main():
     export_onnx(learn, n_timepoints=n_tp, onnx_path=onnx_path, device=device)
 
     # 2. ONNX statico — per ST Edge AI quantizzazione INT8
-    #    Risolve l'errore "list index out of range" causato dagli assi dinamici
     onnx_static_path = os.path.join(args.out, "inceptiontime_static.onnx")
     export_onnx_static(learn, n_timepoints=n_tp,
                        onnx_path=onnx_static_path, device=device, batch_size=1)
 
-    # ── risultati InceptionTime ───────────────────────────────────────────────
+    # ── report testuale ───────────────────────────────────────────────────────
     it_result = {
         "model_name":              "InceptionTime",
         "backend":                 "tsai+PyTorch",
@@ -713,67 +599,25 @@ def main():
         "roc_auc":                 round(auc, 4) if auc else None,
         "avg_precision":           round(ap,  4) if ap  else None,
         "best_threshold":          round(best_th, 2),
-        "confusion_matrix":        cm,
         **ul,
     }
 
-    # ── confronto con MultiRocketHydra ────────────────────────────────────────
-    log.info("")
-    log.info("=" * 72)
-    log.info("CONFRONTO — MultiRocketHydra vs InceptionTime")
-    log.info("=" * 72)
-
-    mr_raw    = load_multirocket_results(args.multirocket_report)
-    mr_result = None
-    if mr_raw:
-        mr_result = {
-            "model_name":              "MultiRocketHydra",
-            "train_time_s":            mr_raw.get("train_time_s", 0),
-            "balanced_accuracy":       mr_raw.get("balanced_accuracy", 0),
-            "f1_arc":                  mr_raw.get("f1_arc", 0),
-            "roc_auc":                 mr_raw.get("roc_auc", None),
-            "avg_precision":           mr_raw.get("avg_precision", None),
-            "best_threshold":          mr_raw.get("best_threshold", 0.5),
-            "detection_rate_pct":      mr_raw.get("detection_rate_pct", 0),
-            "false_positive_rate_pct": mr_raw.get("false_positive_rate_pct", 0),
-            "ul1699b_conforme":        mr_raw.get("ul1699b_conforme", False),
-            "confusion_matrix":        None,
-        }
-
-    all_results = [r for r in [mr_result, it_result] if r]
-    log.info("  %-20s %8s %7s %7s %7s %6s %7s %9s",
-             "Modello", "BA", "F1", "AUC", "Det%", "FP%", "T(s)", "UL1699B")
-    log.info("  " + "-" * 72)
-    for r in all_results:
-        ok = "CONFORME" if r["ul1699b_conforme"] else "NO"
-        log.info("  %-20s %8.4f %7.4f %7s %6.1f%% %5.1f%% %7.1f %9s",
-                 r["model_name"],
-                 r["balanced_accuracy"],
-                 r["f1_arc"],
-                 f"{r['roc_auc']:.4f}" if r["roc_auc"] else "N/A",
-                 r["detection_rate_pct"],
-                 r["false_positive_rate_pct"],
-                 r["train_time_s"],
-                 ok)
-
-    if mr_result:
-        plot_comparison(mr_result, it_result, args.out)
-
-    # ── report testuale ───────────────────────────────────────────────────────
     report_path = os.path.join(args.out, "inceptiontime_report.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("TRAINING REPORT — InceptionTime (tsai + PyTorch)\n")
         f.write("Normativa di riferimento: UL 1699B\n")
         f.write("=" * 60 + "\n\n")
-        f.write(f"Dataset:    {args.dataset}\n")
-        f.write(f"Epoche:     {args.epochs}\n")
-        f.write(f"Batch size: {args.batch_size}\n")
-        f.write(f"Device:     {device}\n\n")
-        for r in all_results:
-            f.write(f"\n{'='*40}\n{r['model_name']}\n{'='*40}\n")
-            for k, v in r.items():
-                if k not in ("confusion_matrix", "model_name"):
-                    f.write(f"  {k}: {v}\n")
+        f.write(f"Dataset train: {args.train}\n")
+        f.write(f"Dataset test:  {args.test}\n")
+        f.write(f"Epoche:        {args.epochs}\n")
+        f.write(f"Batch size:    {args.batch_size}\n")
+        f.write(f"Device:        {device}\n\n")
+        f.write("=" * 40 + "\n")
+        f.write("Risultati\n")
+        f.write("=" * 40 + "\n")
+        for k, v in it_result.items():
+            if k != "model_name":
+                f.write(f"  {k}: {v}\n")
 
     log.info("")
     log.info("Output in: %s", args.out)
@@ -781,8 +625,6 @@ def main():
     log.info("  inceptiontime_static.onnx     ← ST Edge AI quantizzazione INT8")
     log.info("  inceptiontime_training.png")
     log.info("  results_inceptiontime.png")
-    if mr_result:
-        log.info("  confronto_inception_vs_multirocket.png")
     log.info("  inceptiontime_report.txt")
 
 
