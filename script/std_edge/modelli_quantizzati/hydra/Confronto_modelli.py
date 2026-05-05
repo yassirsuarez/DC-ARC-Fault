@@ -7,8 +7,8 @@ from tqdm import tqdm
 # --- CONFIGURAZIONE PERCORSI ---
 PATH_ORIGINALE   = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\onnx\export_hydra\hydra.onnx"
 PATH_QUANTIZZATO = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\std_edge\modelli_quantizzati\hydra\hydra_PerChannel_quant_calibration_hydra_npz_1.onnx"   # ← scaricato da ST Edge AI
-PATH_DATASET     = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_new.npz"
-PATH_BUNDLE      = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\hydra\results_hydra\hydra_bundle.pkl"
+PATH_DATASET     = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz"
+PATH_BUNDLE      = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\hydra\results\hydra_bundle.pkl"
 
 
 def predici(sess, ridge, sample_1d):
@@ -34,7 +34,8 @@ def validazione_hydra(n_campioni=1000):
     X_test = data["X"]
     y_test = data["y"]
 
-    indices = np.random.choice(len(X_test), n_campioni, replace=False)
+    indices = range(len(X_test))
+    n_campioni = len(X_test)
 
     # 2. Caricamento modelli
     sess_orig  = ort.InferenceSession(PATH_ORIGINALE,   providers=["CPUExecutionProvider"])

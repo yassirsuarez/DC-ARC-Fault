@@ -7,6 +7,9 @@ Export SOLO modello Hydra per STM32H7
 ✔ Opset 13 (ST Edge AI compatibile)  
 ✔ Verifica numerica PyTorch vs ONNX
 ✔ Shape statica per STM32 (batch=1)
+
+esempio uso:
+$ python export_hydra.py hydra_bundle.pkl arc_dataset_train.npz --out export_hydra
 """
 
 import os
@@ -189,7 +192,7 @@ def export_calibration_dataset(dataset_path, n_tp, out_dir, n_per_class=200):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model",   help="hydra_bundle.pkl")
-    parser.add_argument("dataset", help="arc_dataset_new.npz")
+    parser.add_argument("dataset", help="arc_dataset_train.npz")
     parser.add_argument("--out",   default="export_hydra")
     parser.add_argument("--n-cal", type=int, default=200,
                         help="Campioni per classe nel dataset di calibrazione")

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-check_hydra_leakage.py
+Check.py
 =======================
 Verifica se il modello Hydra ha leakage o split corretto
+
+esempio uso:
+python Check.py C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz 
 """
 
 import numpy as np

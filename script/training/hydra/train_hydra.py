@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-train_hydra_real_fixed.py
+train_hydra.py
 =========================
-Hydra + Ridge CORRETTO per export STM32:
+Hydra + Ridge per export STM32:
 
+✔ dataset già separato (train/test esterni)
+✔ dataset già bilanciato (NO undersampling)
 ✔ salva modello come dict (NO classi custom → no pickle errors)
 ✔ salva Hydra separata per ONNX
 ✔ salva Ridge per C header
+esempio:
+python train_hydra.py --train train.npz --test test.npz --out results
 """
 
 import argparse
@@ -72,50 +76,23 @@ def extract_features(model, X, device):
 
 
 # ─────────────────────────────────────────────
-def undersample(X, y, max_per_class=5000):
-    idx0 = np.where(y == 0)[0]
-    idx1 = np.where(y == 1)[0]
-
-    n = min(len(idx0), len(idx1), max_per_class)
-
-    rng = np.random.default_rng(42)
-    idx0 = rng.choice(idx0, n, replace=False)
-    idx1 = rng.choice(idx1, n, replace=False)
-
-    idx = np.concatenate([idx0, idx1])
-    rng.shuffle(idx)
-
-    return X[idx], y[idx]
-
-
-# ─────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("dataset")
+    parser.add_argument("--train", required=True, help="train npz file")
+    parser.add_argument("--test", required=True, help="test npz file")
     parser.add_argument("--out", default="results_hydra_real")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
     # ── LOAD DATASET ──
-    data = np.load(args.dataset)
-    X = data["X"]
-    y = data["y"]
+    train = np.load(args.train)
+    test = np.load(args.test)
 
-    log.info("Dataset: %s", X.shape)
+    X_train, y_train = train["X"], train["y"]
+    X_test, y_test = test["X"], test["y"]
 
-    # ── SPLIT 80/20 ──
-    n = len(y)
-    idx = np.random.permutation(n)
-    split = int(n * 0.8)
-
-    tr_idx, te_idx = idx[:split], idx[split:]
-
-    X_train, y_train = X[tr_idx], y[tr_idx]
-    X_test, y_test = X[te_idx], y[te_idx]
-
-    # ── BALANCE ──
-    X_train, y_train = undersample(X_train, y_train)
+    log.info("Train: %s | Test: %s", X_train.shape, X_test.shape)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info("Device: %s", device)
@@ -138,6 +115,19 @@ def main():
     clf = RidgeClassifier(alpha=1.0)
     clf.fit(X_train_feat, y_train)
 
+    # ── SHUFFLE TEST (SANITY CHECK) ──
+    from sklearn.utils import shuffle
+    from sklearn.metrics import f1_score
+
+    y_shuffled = shuffle(y_train, random_state=42)
+
+    clf_shuffle = RidgeClassifier(alpha=1.0)
+    clf_shuffle.fit(X_train_feat, y_shuffled)
+
+    pred = clf_shuffle.predict(X_test_feat)
+
+    print("SHUFFLE F1:", f1_score(y_test, pred))
+
     # ── EVAL ──
     y_pred = clf.predict(X_test_feat)
 
@@ -151,29 +141,27 @@ def main():
     log.info(classification_report(y_test, y_pred))
 
     # ─────────────────────────────────────────────
-    # SAVE (FIX DEFINITIVO)
+    # SAVE
     # ─────────────────────────────────────────────
 
-    # ✔ SALVATAGGIO SICURO (NO classi custom → NO pickle error)
     model_bundle = {
         "hydra_state_dict": hydra.state_dict(),
         "ridge": clf
     }
 
-    full_path = os.path.join(args.out, "hydra_bundle.pkl")
-    with open(full_path, "wb") as f:
+    with open(os.path.join(args.out, "hydra_bundle.pkl"), "wb") as f:
         pickle.dump(model_bundle, f)
 
-    # ✔ Hydra separata per ONNX export
-    torch.save(hydra.state_dict(),
-               os.path.join(args.out, "hydra_extractor.pt"))
+    torch.save(
+        hydra.state_dict(),
+        os.path.join(args.out, "hydra_extractor.pt")
+    )
 
-    # ✔ Ridge per C header (opzionale export diretto)
     np.save(os.path.join(args.out, "ridge_coef.npy"), clf.coef_)
     np.save(os.path.join(args.out, "ridge_intercept.npy"), clf.intercept_)
 
     log.info("\nSaved:")
-    log.info("  ✔ hydra_bundle.pkl (dict safe)")
+    log.info("  ✔ hydra_bundle.pkl")
     log.info("  ✔ hydra_extractor.pt")
     log.info("  ✔ ridge_coef.npy")
     log.info("  ✔ ridge_intercept.npy")
