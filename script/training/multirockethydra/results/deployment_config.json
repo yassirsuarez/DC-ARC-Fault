@@ -1,0 +1,38 @@
+{
+  "model": "MultiHydra + RidgeClassifier",
+  "normativa": "UL1699B",
+  "fs_hz": 10000,
+  "n_features": 28672,
+  "best_threshold": 0.5,
+  "hydra": {
+    "n_kernels": 8,
+    "n_groups": 64,
+    "n_heads": 4,
+    "random_state": 42
+  },
+  "normalization": {
+    "global_mean_train": -2.4470107717888823e-08,
+    "global_std_train": 0.9999997615814209,
+    "mode": "per_sample_zscore"
+  },
+  "metrics": {
+    "accuracy": 0.7101,
+    "balanced_accuracy": 0.7057,
+    "f1_arc": 0.7588,
+    "roc_auc": 0.7824,
+    "avg_precision": 0.8581,
+    "detected": 3266,
+    "missed": 1254,
+    "false_positives": 822,
+    "true_negatives": 1819,
+    "detection_rate_pct": 72.26,
+    "false_positive_rate_pct": 31.12,
+    "ul1699b_conforme": false,
+    "best_threshold": 0.5,
+    "robust_f1_real": 0.8041,
+    "robust_f1_shuffle_mean": 0.7526,
+    "robust_shuffle_ok": false,
+    "robust_feature_space_max_var": 2.3283064365386963e-10,
+    "robust_feature_space_stable": false
+  }
+}

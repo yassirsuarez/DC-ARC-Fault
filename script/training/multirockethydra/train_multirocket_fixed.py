@@ -29,17 +29,6 @@ Requisiti:
     pip install aeon scikit-learn numpy matplotlib seaborn onnx skl2onnx
 
 Normativa di riferimento: UL 1699B — Photovoltaic DC Arc-Fault Circuit Protection
-
-Changelog rispetto alla versione precedente:
-  - FIX 1: RidgeClassifier ora usa class_weight="balanced" per gestire lo
-            sbilanciamento del dataset (arco 62.5% vs no-arco 37.5%).
-            Questo è il fix principale per FP rate 31% → target ≤5%.
-  - FIX 2: La soglia di decisione è ora calcolata tramite analisi multi-soglia
-            sulla curva ROC post-training, non fissa a 0.5.
-  - FIX 3: Aggiunta opzione --smote per bilanciare il train set prima
-            dell'estrazione feature (richiede imbalanced-learn).
-  - FIX 4: Soglia stabilità feature space alzata a 1e-9 (Hydra usa float32
-            internamente, varianza ~2e-10 è rumore numerico normale).
 """
 
 import argparse
@@ -96,11 +85,6 @@ UL_MAX_FP_PCT        = 5.0     # False positive rate massimo [%]
 HYDRA_N_KERNELS      = 8        # n_kernels: kernel per gruppo
 HYDRA_N_GROUPS       = 64       # n_groups:  numero di gruppi
 HYDRA_MAX_CHANNELS   = 8        # max_num_channels
-
-# FIX 4: Soglia stabilità feature space alzata a 1e-9.
-# Hydra usa float32 internamente → varianza numerica ~2e-10 è normale e inoffensiva.
-# La soglia 1e-10 della versione precedente era troppo stretta.
-FEATURE_STABILITY_THRESHOLD = 1e-9
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -253,45 +237,6 @@ def normalize(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3b. Oversampling SMOTE (opzionale)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def apply_smote(
-    X_feat: np.ndarray,
-    y:      np.ndarray,
-) -> tuple:
-    """
-    FIX 3 (opzionale): bilancia il train set nel feature space con SMOTE.
-
-    SMOTE viene applicato DOPO l'estrazione delle feature Hydra (non sulle
-    serie temporali grezze) per evitare di generare campioni sintetici
-    fuori dalla distribuzione temporale reale.
-
-    Richiede: pip install imbalanced-learn
-
-    Returns:
-        X_feat_resampled, y_resampled
-    """
-    try:
-        from imblearn.over_sampling import SMOTE
-    except ImportError:
-        log.error("imbalanced-learn non disponibile. Installare: pip install imbalanced-learn")
-        sys.exit(1)
-
-    n0_pre = int((y == 0).sum())
-    n1_pre = int((y == 1).sum())
-    log.info("  SMOTE — prima: arco=%d, no-arco=%d", n1_pre, n0_pre)
-
-    smote = SMOTE(random_state=RAND_STATE)
-    X_res, y_res = smote.fit_resample(X_feat, y)
-
-    n0_post = int((y_res == 0).sum())
-    n1_post = int((y_res == 1).sum())
-    log.info("  SMOTE — dopo:  arco=%d, no-arco=%d", n1_post, n0_post)
-    return X_res, y_res
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 4. MultiHydra feature extractor
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -401,18 +346,8 @@ class MultiHydraTransformer:
 # 5. Metriche UL1699B
 # ══════════════════════════════════════════════════════════════════════════════
 
-def ul1699b_metric(
-    y_test:    np.ndarray,
-    y_pred:    np.ndarray,
-    threshold: float = 0.5,
-) -> dict:
-    """
-    Verifica conformità UL1699B con la soglia specificata.
-
-    FIX 2: accetta ora un parametro `threshold` esplicito invece di usare
-    sempre 0.5. Dopo il training con class_weight="balanced" la soglia
-    ottimale può differire significativamente da 0.5.
-    """
+def ul1699b_metric(y_test: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Verifica conformità UL1699B con soglia 0.5."""
     arc    = y_test == 1
     no_arc = y_test == 0
 
@@ -427,7 +362,7 @@ def ul1699b_metric(
 
     log.info("")
     log.info("=" * 60)
-    log.info("METRICA UL1699B (soglia = %.2f)", threshold)
+    log.info("METRICA UL1699B (soglia = 0.5)")
     log.info("=" * 60)
     log.info("  Archi rilevati:   %d / %d  (%.1f%%)",
              detected, int(arc.sum()), det_rate)
@@ -454,15 +389,10 @@ def threshold_analysis(
     y_score: np.ndarray,
 ) -> float:
     """
-    FIX 2: Analisi multi-soglia per ottimizzazione punto operativo UL1699B.
+    Analisi multi-soglia per ottimizzazione punto operativo UL1699B.
 
-    Cerca la soglia che massimizza la detection rate mantenendo FP ≤ 5%.
-    In caso nessuna soglia rispetti entrambi i vincoli, restituisce quella
-    con il miglior trade-off (det rate massima a parità di FP ≤ 5%,
-    oppure FP minimo se det rate non raggiunge il 95%).
-
-    Returns:
-        best_threshold (float)
+    Stampa tabella detection rate / false positive rate per soglie 0.05–0.95
+    e restituisce la soglia ottimale (max detection rate conforme a UL1699B).
     """
     log.info("")
     log.info("  --- Analisi multi-soglia UL1699B ---")
@@ -471,12 +401,9 @@ def threshold_analysis(
 
     best_threshold = 0.5
     best_det       = 0.0
-    best_fp        = 100.0
-
     arc    = y_test == 1
     no_arc = y_test == 0
 
-    # Prima passata: cerca threshold che rispetta entrambi i vincoli UL1699B
     for thr in np.arange(0.05, 1.00, 0.05):
         yp  = (y_score >= thr).astype(int)
         det = 100.0 * ((yp == 1) & arc).sum()    / max(int(arc.sum()),    1)
@@ -487,22 +414,6 @@ def threshold_analysis(
         if det >= UL_MIN_DETECTION_PCT and fpr <= UL_MAX_FP_PCT and det > best_det:
             best_det       = det
             best_threshold = float(thr)
-
-    # Se nessuna soglia supera entrambi i vincoli, scegli quella con FP ≤ 5%
-    # e detection rate massima (anche se < 95%)
-    if best_det == 0.0:
-        log.warning("  Nessuna soglia soddisfa entrambi i vincoli UL1699B.")
-        log.warning("  Seleziono la soglia con FP ≤ %.0f%% e det rate massima.", UL_MAX_FP_PCT)
-        for thr in np.arange(0.05, 1.00, 0.01):
-            yp  = (y_score >= thr).astype(int)
-            det = 100.0 * ((yp == 1) & arc).sum()    / max(int(arc.sum()),    1)
-            fpr = 100.0 * ((yp == 1) & no_arc).sum() / max(int(no_arc.sum()), 1)
-            if fpr <= UL_MAX_FP_PCT and det > best_det:
-                best_det       = det
-                best_fp        = fpr
-                best_threshold = float(thr)
-        log.warning("  Migliore trovata: soglia=%.2f  det=%.1f%%  FP=%.1f%%",
-                    best_threshold, best_det, best_fp)
 
     log.info("")
     log.info("  Soglia ottimale: %.2f  (det=%.1f%%)", best_threshold, best_det)
@@ -528,11 +439,7 @@ def robustness_validation(
        non sfrutta artefatti di ordinamento.
 
     2. Stabilità feature space: estrae le feature N volte sullo stesso batch
-       e verifica che la varianza inter-run sia sotto FEATURE_STABILITY_THRESHOLD.
-
-    FIX 4: la soglia di stabilità è ora FEATURE_STABILITY_THRESHOLD = 1e-9
-    invece di 1e-10, perché Hydra usa float32 internamente e la varianza
-    numerica attesa è ~2e-10 (inoffensiva per la classificazione).
+       e verifica che la varianza inter-run sia nulla (determinismo Hydra).
 
     Returns:
         dict con risultati dei due test.
@@ -566,15 +473,13 @@ def robustness_validation(
     results["shuffle_ok"]      = mean_shuf < f1_real * 0.7
 
     # --- Stabilità feature space ---
-    # FIX 4: soglia alzata a FEATURE_STABILITY_THRESHOLD (1e-9)
     log.info("  Stabilità feature space (3 run su stesso batch)...")
-    log.info("  Soglia varianza: %.0e", FEATURE_STABILITY_THRESHOLD)
     batch = X_test[:min(32, len(X_test))]
     feats = [hydra.transform_batch(batch) for _ in range(3)]
     max_var = float(np.max(np.var(np.stack(feats, axis=0), axis=0)))
-    log.info("  Varianza max inter-run: %.2e", max_var)
+    log.info("  Varianza max inter-run: %.2e  (atteso = 0.0)", max_var)
     results["feature_space_max_var"] = max_var
-    results["feature_space_stable"]  = max_var < FEATURE_STABILITY_THRESHOLD
+    results["feature_space_stable"]  = max_var < 1e-10
 
     if results["shuffle_ok"]:
         log.info("  ✓ Shuffle test superato")
@@ -582,11 +487,9 @@ def robustness_validation(
         log.warning("  ✗ Shuffle test fallito — verificare data leakage")
 
     if results["feature_space_stable"]:
-        log.info("  ✓ Feature space deterministico (entro soglia %.0e)",
-                 FEATURE_STABILITY_THRESHOLD)
+        log.info("  ✓ Feature space deterministico")
     else:
-        log.warning("  ✗ Feature space non deterministico (varianza %.2e > %.0e)",
-                    max_var, FEATURE_STABILITY_THRESHOLD)
+        log.warning("  ✗ Feature space non deterministico")
 
     return results
 
@@ -720,9 +623,6 @@ def export_c_header(
  *
  * Normativa: UL 1699B — Photovoltaic DC Arc-Fault Circuit Protection
  *
- * Nota: il modello usa class_weight="balanced" nel training.
- * La soglia ottimale è {best_threshold:.4f} (non 0.5).
- *
  * Uso:
  *   #include "hydra_ridge_inference.h"
  *   float score = hydra_ridge_score(feature_vector, N_FEATURES);
@@ -787,8 +687,6 @@ def export_config_json(
     best_threshold: float,
     metrics:        dict,
     n_features:     int,
-    class_weight:   str,
-    smote_applied:  bool,
 ) -> str:
     """
     Salva il file di configurazione JSON per il deployment embedded.
@@ -797,15 +695,13 @@ def export_config_json(
     e l'inferenza su target embedded (STM32, ESP32, ecc.).
     """
     cfg = {
-        "model":            "MultiHydra + RidgeClassifier",
-        "normativa":        "UL1699B",
-        "fs_hz":            FS_HZ,
-        "n_features":       n_features,
-        "best_threshold":   round(best_threshold, 4),
-        "class_weight":     class_weight,
-        "smote_applied":    smote_applied,
-        "hydra":            hydra_cfg,
-        "normalization":    norm_params or {"mode": "none"},
+        "model":          "MultiHydra + RidgeClassifier",
+        "normativa":      "UL1699B",
+        "fs_hz":          FS_HZ,
+        "n_features":     n_features,
+        "best_threshold": round(best_threshold, 4),
+        "hydra":          hydra_cfg,
+        "normalization":  norm_params or {"mode": "none"},
         "metrics": {
             k: v for k, v in metrics.items()
             if isinstance(v, (int, float, bool, str))
@@ -850,18 +746,14 @@ def plot_class_distribution(
 
 
 def plot_results(
-    y_test:     np.ndarray,
-    y_pred:     np.ndarray,
-    y_score:    np.ndarray,
-    out_dir:    str,
-    threshold:  float = 0.5,
+    y_test:  np.ndarray,
+    y_pred:  np.ndarray,
+    y_score: np.ndarray,
+    out_dir: str,
 ) -> None:
     """Pannello 4 grafici: CM | ROC | PR | Score distribution."""
     fig, axes = plt.subplots(1, 4, figsize=(22, 5))
-    fig.suptitle(
-        f"Risultati — MultiHydra + Ridge  (class_weight=balanced, soglia={threshold:.2f})",
-        fontsize=13,
-    )
+    fig.suptitle("Risultati — MultiHydra + Ridge", fontsize=13)
 
     # Confusion Matrix
     ax = axes[0]
@@ -878,11 +770,7 @@ def plot_results(
     auc = roc_auc_score(y_test, y_score)
     ax.plot(fpr_c, tpr_c, color="steelblue", lw=2, label=f"AUC={auc:.3f}")
     ax.plot([0,1],[0,1],"k--",lw=1)
-    ax.axvline(UL_MAX_FP_PCT / 100, color="tomato", ls=":", lw=1.5,
-               label=f"UL max FP={UL_MAX_FP_PCT:.0f}%")
-    ax.axhline(UL_MIN_DETECTION_PCT / 100, color="green", ls=":", lw=1.5,
-               label=f"UL min det={UL_MIN_DETECTION_PCT:.0f}%")
-    ax.set_xlabel("FPR"); ax.set_ylabel("TPR"); ax.legend(fontsize=8)
+    ax.set_xlabel("FPR"); ax.set_ylabel("TPR"); ax.legend()
     ax.set_title("ROC Curve"); ax.grid(alpha=0.3)
 
     # Precision-Recall
@@ -901,8 +789,7 @@ def plot_results(
             color="steelblue", label="No arco (0)")
     ax.hist(y_score[y_test==1], bins=40, alpha=0.6,
             color="tomato", label="Arco (1)")
-    ax.axvline(threshold, color="black", ls="--", lw=1.5,
-               label=f"soglia={threshold:.2f}")
+    ax.axvline(0.5, color="black", ls="--", lw=1, label="soglia=0.5")
     ax.set_xlabel("Score (sigmoid)"); ax.legend()
     ax.set_title("Distribuzione score"); ax.grid(alpha=0.3)
 
@@ -990,10 +877,6 @@ def plot_threshold_curve(
                label=f"UL1699B max FP = {UL_MAX_FP_PCT:.0f}%")
     ax.axvline(best_thr, color="black", ls=":", lw=2,
                label=f"Soglia ottimale = {best_thr:.2f}")
-    # Evidenzia zona conformità UL1699B
-    ax.fill_betweenx([UL_MIN_DETECTION_PCT, 100],
-                     [best_thr - 0.1], [best_thr + 0.1],
-                     alpha=0.1, color="green", label="Zona conformità")
     ax.set_xlabel("Soglia di decisione")
     ax.set_ylabel("Percentuale [%]")
     ax.set_title("Analisi multi-soglia — UL1699B")
@@ -1035,20 +918,9 @@ def main() -> None:
                         help=f"Gruppi Hydra / n_groups (default: {HYDRA_N_GROUPS})")
     parser.add_argument("--ridge-alpha", type=float, default=RIDGE_ALPHA,
                         help=f"Alpha Ridge (default: {RIDGE_ALPHA})")
-    # FIX 1: aggiunta opzione --class-weight (default: balanced)
-    parser.add_argument("--class-weight", default="balanced",
-                        choices=["balanced", "none"],
-                        help="Peso classi Ridge: 'balanced' (default) o 'none'")
-    # FIX 3: aggiunta opzione --smote
-    parser.add_argument("--smote", action="store_true",
-                        help="Applica SMOTE nel feature space dopo estrazione Hydra "
-                             "(richiede: pip install imbalanced-learn)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                         help=f"Batch feature extraction (default: {BATCH_SIZE})")
     args = parser.parse_args()
-
-    # Normalizza --class-weight: "none" → None per sklearn
-    class_weight_val = None if args.class_weight == "none" else args.class_weight
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -1074,10 +946,6 @@ def main() -> None:
     log.info("=" * 60)
     log.info("ADDESTRAMENTO MULTIHYRA + RIDGE")
     log.info("=" * 60)
-    # FIX 1: log esplicito di class_weight
-    log.info("  class_weight = %s", args.class_weight)
-    if args.smote:
-        log.info("  SMOTE = abilitato (verrà applicato nel feature space)")
 
     try:
         from aeon.transformations.collection.convolution_based import HydraTransformer
@@ -1109,35 +977,16 @@ def main() -> None:
     feat_train  = feat_scaler.fit_transform(feat_train)
     feat_test   = feat_scaler.transform(feat_test)
 
-    # FIX 3 (opzionale): SMOTE nel feature space normalizzato
-    smote_applied = False
-    if args.smote:
-        log.info("")
-        log.info("=" * 60)
-        log.info("SMOTE — OVERSAMPLING FEATURE SPACE")
-        log.info("=" * 60)
-        feat_train, y_train_ridge = apply_smote(feat_train, y_train)
-        smote_applied = True
-    else:
-        y_train_ridge = y_train
-
-    # FIX 1: RidgeClassifier con class_weight="balanced"
-    ridge = RidgeClassifier(
-        alpha=args.ridge_alpha,
-        class_weight=class_weight_val,
-        random_state=RAND_STATE,
-    )
+    # Ridge Classifier
+    ridge = RidgeClassifier(alpha=args.ridge_alpha, random_state=RAND_STATE)
     t0 = time.time()
-    ridge.fit(feat_train, y_train_ridge)
+    ridge.fit(feat_train, y_train)
     t_ridge = time.time() - t0
     log.info("  Ridge fit completato in %.1f s", t_ridge)
 
-    # 5. Predizione con soglia 0.5 iniziale (verrà ottimizzata al passo 7)
+    # 5. Predizione
+    y_pred  = ridge.predict(feat_test)
     y_score = _ridge_decision_to_proba(ridge, feat_test)
-
-    # FIX 2: calcola prima la soglia ottimale, poi deriva y_pred da quella
-    best_thr = threshold_analysis(y_test, y_score)
-    y_pred   = (y_score >= best_thr).astype(int)
 
     # 6. Metriche
     log.info("")
@@ -1163,11 +1012,14 @@ def main() -> None:
     log.info("  ROC-AUC:           %.4f", auc)
     log.info("  Avg Precision:     %.4f", ap)
 
-    # 7. UL1699B con soglia ottimale (FIX 2)
-    ul = ul1699b_metric(y_test, y_pred, threshold=best_thr)
+    # 7. UL1699B (soglia 0.5)
+    ul = ul1699b_metric(y_test, y_pred)
+
+    # Analisi multi-soglia
+    best_thr = threshold_analysis(y_test, y_score)
     ul["best_threshold"] = best_thr
 
-    # 8. Robustezza (FIX 4: soglia stabilità corretta internamente)
+    # 8. Robustezza
     robust = robustness_validation(hydra, ridge, X_test, y_test)
 
     # Grafici
@@ -1176,7 +1028,7 @@ def main() -> None:
     log.info("SALVATAGGIO GRAFICI")
     log.info("=" * 60)
     plot_class_distribution(y_train, y_test, args.out)
-    plot_results(y_test, y_pred, y_score, args.out, threshold=best_thr)
+    plot_results(y_test, y_pred, y_score, args.out)
     plot_series_examples(X_test, y_test, y_pred, args.out)
     plot_threshold_curve(y_test, y_score, args.out, best_thr)
 
@@ -1196,8 +1048,6 @@ def main() -> None:
         "n_features":     n_features,
         "hydra_cfg":      hydra_cfg,
         "ridge_alpha":    args.ridge_alpha,
-        "class_weight":   args.class_weight,
-        "smote_applied":  smote_applied,
         "metrics": {
             "accuracy":           round(acc, 4),
             "balanced_accuracy":  round(ba,  4),
@@ -1226,7 +1076,6 @@ def main() -> None:
     export_config_json(
         args.out, hydra_cfg, norm_params, best_thr,
         bundle["metrics"], n_features,
-        args.class_weight, smote_applied,
     )
 
     # Riepilogo finale
@@ -1234,8 +1083,6 @@ def main() -> None:
     log.info("=" * 72)
     log.info("RIEPILOGO FINALE")
     log.info("=" * 72)
-    log.info("  class_weight:      %s", args.class_weight)
-    log.info("  SMOTE:             %s", "SI" if smote_applied else "NO")
     log.info("  Accuracy:          %.4f", acc)
     log.info("  Balanced Accuracy: %.4f", ba)
     log.info("  F1 (arco):         %.4f", f1)
@@ -1256,17 +1103,6 @@ def main() -> None:
     log.info("")
     log.info("  Output in: %s", args.out)
 
-    # Suggerimento se ancora non conforme
-    if not ul["ul1699b_conforme"]:
-        log.warning("")
-        log.warning("  Il modello non è ancora conforme UL1699B.")
-        log.warning("  Azioni suggerite:")
-        if not smote_applied:
-            log.warning("  → Riprova con --smote per bilanciare il training set")
-        log.warning("  → Aumenta --hydra-heads (es. da 4 a 8) per più feature")
-        log.warning("  → Aumenta --hydra-n-groups (es. da 64 a 128)")
-        log.warning("  → Verifica che il dataset non contenga data leakage")
-
     # Report testuale
     report_path = os.path.join(args.out, "training_report.txt")
     with open(report_path, "w", encoding="utf-8") as f:
@@ -1275,9 +1111,6 @@ def main() -> None:
         f.write("=" * 60 + "\n\n")
         f.write(f"Train: {args.train}\n")
         f.write(f"Test:  {args.test}\n")
-        f.write(f"class_weight: {args.class_weight}\n")
-        f.write(f"SMOTE: {'SI' if smote_applied else 'NO'}\n")
-        f.write(f"Soglia ottimale: {best_thr:.4f}\n\n")
         f.write(f"Campioni train: {len(y_train)}  (arco={int((y_train==1).sum())},"
                 f" no={int((y_train==0).sum())})\n")
         f.write(f"Campioni test:  {len(y_test)}  (arco={int((y_test==1).sum())},"
