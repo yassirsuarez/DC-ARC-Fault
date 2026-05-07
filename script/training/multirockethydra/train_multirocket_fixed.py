@@ -206,18 +206,20 @@ class MultiRocketGPU:
 
             # Bias dal quantile della risposta su segnale random
             dummy = rng.normal(0, 1, (1, input_length)).astype(np.float32)
+            # shape: (1, 1, T) — batch=1, channels=1, length=T
             dummy_t = torch.tensor(dummy, device=self.device).unsqueeze(0)
+            dummy_diff = torch.diff(dummy_t, dim=2)  # shape: (1, 1, T-1)
             for j, (d, p) in enumerate(zip(dils, pads)):
-                k_a = torch.tensor(w_a[j:j+1], device=self.device).unsqueeze(0)
-                k_b = torch.tensor(w_b[j:j+1], device=self.device).unsqueeze(0)
+                k_a = torch.tensor(w_a[j:j+1], device=self.device).view(1, 1, L)
+                k_b = torch.tensor(w_b[j:j+1], device=self.device).view(1, 1, L)
                 import torch.nn.functional as F
-                out_a = F.conv1d(dummy_t, k_a, dilation=int(d), padding=int(p))
-                out_b = F.conv1d(dummy_t, k_b, dilation=int(d), padding=int(p))
+                out_a = F.conv1d(dummy_t,    k_a, dilation=int(d), padding=int(p))
+                out_b = F.conv1d(dummy_diff, k_b, dilation=int(d), padding=int(p))
                 q = float(rng.uniform(0, 1))
                 all_biases_a.append(float(torch.quantile(out_a.cpu(), q)))
                 all_biases_b.append(float(torch.quantile(out_b.cpu(), q)))
 
-            all_weights_a.extend(w_a.tolist())
+            all_weights_a.extend(w_a.tolist())   # ogni elemento: lista di L float
             all_weights_b.extend(w_b.tolist())
             all_dilations.extend(dils.tolist())
             all_paddings.extend(pads.tolist())
@@ -264,7 +266,7 @@ class MultiRocketGPU:
         if X_t.ndim == 2:
             X_t = X_t.unsqueeze(1)
 
-        # Differenze prime per set B
+        # Differenze prime per set B — shape: (batch, 1, T-1)
         X_diff = torch.diff(X_t, dim=2)
 
         n_k = self._n_total_kernels
@@ -293,7 +295,7 @@ class MultiRocketGPU:
             ppv_a = (out_a > 0).float().mean(dim=2).squeeze(1).cpu().numpy()
             ppv_b = (out_b > 0).float().mean(dim=2).squeeze(1).cpu().numpy()
 
-            # Mean dei valori positivi (MPV — MultiRocket)
+            # Mean dei valori (MPV — MultiRocket)
             mean_a = out_a.mean(dim=2).squeeze(1).cpu().numpy()
             mean_b = out_b.mean(dim=2).squeeze(1).cpu().numpy()
 

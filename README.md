@@ -1,15 +1,26 @@
-# DC-ARC-Fault
+# DC-ARC-Fault ⚡
 
-Pipeline completa per la rilevazione di archi elettrici DC in impianti fotovoltaici tramite tecniche di Deep Learning e Time Series Classification, con supporto al deployment su dispositivi embedded attraverso ST Edge AI.
+Pipeline completa per la rilevazione di **DC Arc Fault** in impianti fotovoltaici tramite tecniche di **Deep Learning** e **Time Series Classification**, con supporto al deployment su dispositivi embedded mediante **ST Edge AI**.
 
-Il progetto include:
+---
+
+# 🧠 Obiettivo del Progetto
+
+L'obiettivo del progetto è sviluppare un sistema di classificazione in grado di identificare fault da arco elettrico DC in segnali provenienti da impianti fotovoltaici, ottimizzando contemporaneamente:
+
+- accuratezza del modello
+- robustezza contro il data leakage
+- compatibilità con sistemi embedded
+- inferenza real-time su hardware edge
+
+La pipeline include:
 
 - costruzione del dataset
-- preprocessing e controllo leakage
+- preprocessing e controllo del leakage
 - training di modelli deep learning e feature-based
-- esportazione ONNX
+- esportazione in formato ONNX
 - quantizzazione INT8
-- validazione su hardware edge
+- validazione su hardware edge STM32
 
 ---
 
@@ -18,47 +29,50 @@ Il progetto include:
 ```text
 DC-ARC-Fault/
 │
-├── dataset/
-│   ├── dataset/                         # Dataset grezzo originale
-│   ├── dataset_new/                     # Dataset preprocessato finale
+├── dataset/                                 # GESTIONE DATI
+│   ├── dataset/                             # Dataset grezzo originale (IEEE DataPort)
+│   ├── dataset_new/                         # Dataset processato (windowing + split)
+│   │   ├── train/
+│   │   └── test/
 │   │
-│   ├── build_dataset_new.py             # Creazione finestre temporali
-│   ├── split_dataset.py                 # Split fisico train/test
-│   ├── check.py                         # Controlli anti data leakage
-│   └── Check2.py                        # Controlli aggiuntivi
+│   ├── build_dataset_new.py                 # Costruzione finestre temporali
+│   ├── split_dataset.py                     # Split fisico Train/Test
+│   └── check.py                             # Verifica integrità e controllo leakage
 │
 ├── script/
-│   ├── onnx/
-│   │   ├── dataset_otimizzazione/
-│   │   │   ├── calibration_inceptiontime/
-│   │   │   └── dataset_calibrazione_inception.py
+│   ├── training/                            # FASE 1 — TRAINING
+│   │   ├── inception_time/
+│   │   │   ├── risultati_finali/
+│   │   │   ├── train_inceptiontime_gpu.py
+│   │   │   └── *.keras
+│   │   │
+│   │   ├── mcnn/
+│   │   │   ├── results/
+│   │   │   └── train_hydra.py
+│   │   │
+│   │   └── multirockethydra/
+│   │       ├── results/
+│   │       └── train_multirocket_fixed.py
+│   │
+│   ├── onnx/                                # FASE 2 — EXPORT & OTTIMIZZAZIONE
+│   │   ├── dataset_ottimizzazione/
+│   │   │   └── calibration_inceptiontime/
 │   │   │
 │   │   ├── export_mcnn/
-│   │   └── export_mcnn.py               # Export modelli in ONNX
+│   │   └── export_mcnn.py
 │   │
-│   ├── std_edge/
-│   │   └── modelli_quantizzati/
-│   │       ├── Inception/
-│   │       └── mcnn/
-│   │
-│   └── training/
-│       ├── inception_time/              # Training InceptionTime
-│       ├── mcnn/                        # Training MCNN
-│       └── multirockethydra/            # Training MultiRocket + Hydra
+│   └── std_edge/                            # FASE 3 — DEPLOYMENT EDGE AI
+│       └── modelli_quantizzati/
+│           ├── inception/
+│           │   ├── Confronto_modelli.py
+│           │   └── *_quant_calibra.onnx
+│           │
+│           └── mcnn/
+│               └── Confronto_modelli.py
 │
-└── Altri file
+├── pipeline.png                             # Workflow della pipeline
+└── README.md
 ```
-
----
-
-# 🧠 Obiettivo del Progetto
-
-L'obiettivo è sviluppare un sistema di classificazione in grado di identificare fault DC arc in segnali provenienti da impianti fotovoltaici, ottimizzando contemporaneamente:
-
-- accuratezza del modello
-- robustezza contro il data leakage
-- compatibilità con sistemi embedded
-- inferenza real-time su hardware edge
 
 ---
 
@@ -66,17 +80,21 @@ L'obiettivo è sviluppare un sistema di classificazione in grado di identificare
 
 Il progetto utilizza il dataset pubblico:
 
-**Photovoltaic (PV) DC Arc-Fault Library**
+## Photovoltaic (PV) DC Arc-Fault Library
 
 https://ieee-dataport.org/open-access/photovoltaic-pv-dc-arc-library
 
-Dal dataset originale vengono estratti:
+Dal dataset originale vengono estratti i segnali di:
 
 - corrente
 - tensione
 - potenza
 
-I segnali vengono successivamente trasformati in finestre temporali utilizzabili dai modelli di classificazione.
+Dataset preprocessato disponibile anche su Kaggle:
+
+https://www.kaggle.com/datasets/yassirsuarez/dc-arc-fault
+
+Successivamente i segnali vengono trasformati in finestre temporali supervisionate utilizzabili dai modelli di classificazione.
 
 ---
 
@@ -84,11 +102,11 @@ I segnali vengono successivamente trasformati in finestre temporali utilizzabili
 
 ![Pipeline](pipeline.png)
 
-La pipeline completa è suddivisa in cinque fasi principali.
+La pipeline è suddivisa in sei fasi principali.
 
 ---
 
-# 1. 📂 Data Management
+# 1️⃣ Data Management
 
 Il dataset grezzo viene:
 
@@ -99,29 +117,29 @@ Il dataset grezzo viene:
 Questa fase comprende:
 
 - caricamento dei segnali originali
-- verifica integrità dei dati
+- verifica dell'integrità dei dati
 - preparazione delle serie temporali
 
 ---
 
-# 2. ⚙️ Preprocessing & Physical Split
+# 2️⃣ Preprocessing & Physical Split
 
 I segnali vengono preprocessati tramite:
 
-- segmentazione a finestra scorrevole
+- segmentazione con finestra scorrevole
 - normalizzazione
 - costruzione dei sample supervisionati
 
 Script principale:
 
 ```bash
-build_dataset_new.py
+python build_dataset_new.py
 ```
 
 Successivamente viene eseguito uno split fisico tramite:
 
 ```bash
-split_dataset.py
+python split_dataset.py
 ```
 
 ## Dataset generati
@@ -129,20 +147,20 @@ split_dataset.py
 - Train Set → 80%
 - Test Set → 20%
 
-Lo split viene effettuato prima del training per evitare:
+Lo split viene effettuato **prima del training** per evitare:
 
 - overlap tra finestre
 - contaminazione tra train e test
 - data leakage temporale
 
-I dataset finali vengono salvati in:
+I dataset finali vengono salvati nei formati:
 
-- formato `.npz`
-- formato `.csv`
+- `.npz`
+- `.csv`
 
 ---
 
-# 3. 🧠 Training & Feature Extraction
+# 3️⃣ Training & Feature Extraction
 
 La cartella:
 
@@ -150,7 +168,7 @@ La cartella:
 script/training/
 ```
 
-contiene differenti approcci di classificazione:
+contiene differenti approcci di classificazione.
 
 | Modello | Descrizione |
 |---|---|
@@ -168,18 +186,18 @@ Durante il training vengono eseguiti:
 
 ---
 
-# 4. 📦 Export ONNX & Quantizzazione
+# 4️⃣ Export ONNX & Quantizzazione
 
-I modelli addestrati vengono esportati in:
+I modelli addestrati vengono esportati nel formato:
 
 ```text
 ONNX (FP32)
 ```
 
-Script principali:
+Script principale:
 
 ```bash
-export_mcnn.py
+python export_mcnn.py
 ```
 
 Un sottoinsieme del train set viene utilizzato come:
@@ -189,20 +207,20 @@ Un sottoinsieme del train set viene utilizzato come:
 
 ---
 
-# 5. ⚡ Deployment su ST Edge AI
+# 5️⃣ Deployment su ST Edge AI
 
-I modelli vengono verificati tramite:
+I modelli vengono validati tramite:
 
 - ST Edge AI Core
 - ST Edge AI Developer Cloud
 
 Obiettivi:
 
-- riduzione memoria
-- inferenza embedded
-- compatibilità hardware STM32
+- riduzione dell'utilizzo di memoria
+- inferenza embedded real-time
+- compatibilità con hardware STM32
 
-Vengono analizzate:
+Configurazioni analizzate:
 
 | Configurazione | Obiettivo |
 |---|---|
@@ -218,7 +236,7 @@ Metriche monitorate:
 
 ---
 
-# 6. 📊 Valutazione Finale
+# 6️⃣ Valutazione Finale
 
 Il test set rimane completamente indipendente dall'intero processo di training e calibrazione.
 
@@ -227,13 +245,13 @@ Vengono confrontati:
 - modello FP32
 - modello INT8
 
-L'obiettivo finale è misurare:
+Metriche finali:
 
-- accuracy
-- precision
-- recall
+- Accuracy
+- Precision
+- Recall
 - F1-score
-- impatto della quantizzazione
+- Impatto della quantizzazione
 
 ---
 
@@ -274,10 +292,12 @@ python train_multirocket_fixed.py \
 - riduzione del data leakage
 - deployment embedded
 - ottimizzazione memoria/inferenza
-- pipeline riproducibile e scalabile
+- pipeline scalabile e riproducibile
 
 ---
 
 # 📄 Licenza
 
-Il dataset originale appartiene ai rispettivi autori del progetto IEEE DataPort.
+Il dataset originale appartiene ai rispettivi autori del progetto pubblicato su IEEE DataPort.
+
+Il codice del repository è distribuito secondo la licenza specificata nel progetto.
