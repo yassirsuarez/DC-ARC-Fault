@@ -4,24 +4,28 @@ Normativa: UL 1699B
 
 Train: C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_train.npz
 Test:  C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz
+class_weight: balanced
+SMOTE: NO
+Soglia ottimale: 0.8200
+
 Campioni train: 27770  (arco=17370, no=10400)
 Campioni test:  7161  (arco=4520, no=2641)
 
-  accuracy: 0.7101
-  balanced_accuracy: 0.7057
-  f1_arc: 0.7588
-  roc_auc: 0.7824
-  avg_precision: 0.8581
-  detected: 3266
-  missed: 1254
-  false_positives: 822
-  true_negatives: 1819
-  detection_rate_pct: 72.26
-  false_positive_rate_pct: 31.12
+  accuracy: 0.5516
+  balanced_accuracy: 0.635
+  f1_arc: 0.4716
+  roc_auc: 0.8087
+  avg_precision: 0.8703
+  detected: 1433
+  missed: 3087
+  false_positives: 124
+  true_negatives: 2517
+  detection_rate_pct: 31.7
+  false_positive_rate_pct: 4.7
   ul1699b_conforme: False
-  best_threshold: 0.5
-  robust_f1_real: 0.8041
-  robust_f1_shuffle_mean: 0.7526
+  best_threshold: 0.8200000000000002
+  robust_f1_real: 0.7745
+  robust_f1_shuffle_mean: 0.7735
   robust_shuffle_ok: False
   robust_feature_space_max_var: 2.3283064365386963e-10
-  robust_feature_space_stable: False
+  robust_feature_space_stable: True
