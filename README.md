@@ -70,8 +70,46 @@ DC-ARC-Fault/
 │           └── mcnn/
 │               └── Confronto_modelli.py
 │
+├── requirements.txt                         # Dipendenze del progetto
 ├── pipeline.png                             # Workflow della pipeline
 └── README.md
+```
+
+---
+
+# ⚙️ Installazione
+
+Clonare il repository:
+
+```bash
+git clone <repository-url>
+cd DC-ARC-Fault
+```
+
+Creare un ambiente virtuale (opzionale ma consigliato):
+
+```bash
+python -m venv venv
+```
+
+Attivare l'ambiente virtuale:
+
+### Linux / macOS
+
+```bash
+source venv/bin/activate
+```
+
+### Windows
+
+```bash
+venv\Scripts\activate
+```
+
+Installare le dipendenze:
+
+```bash
+pip install -r requirements.txt
 ```
 
 ---
@@ -90,11 +128,11 @@ Dal dataset originale vengono estratti i segnali di:
 - tensione
 - potenza
 
+Successivamente i segnali vengono trasformati in finestre temporali supervisionate utilizzabili dai modelli di classificazione.
+
 Dataset preprocessato disponibile anche su Kaggle:
 
 https://www.kaggle.com/datasets/yassirsuarez/dc-arc-fault
-
-Successivamente i segnali vengono trasformati in finestre temporali supervisionate utilizzabili dai modelli di classificazione.
 
 ---
 
@@ -251,7 +289,21 @@ Metriche finali:
 - Precision
 - Recall
 - F1-score
-- Impatto della quantizzazione
+- impatto della quantizzazione
+
+---
+
+# 📊 Risultati
+
+Di seguito sono riportate le accuratezze ottenute dai principali modelli utilizzati nel progetto, confrontando le versioni FP32 e INT8.
+
+| Modello | FP32 Accuracy | INT8 Accuracy |
+|---|---|---|
+| InceptionTime | -- | -- |
+| MCNN | -- | -- |
+| MultiRocket + Hydra | -- | -- |
+
+> Sostituire i valori `--` con i risultati finali ottenuti durante i benchmark.
 
 ---
 
@@ -293,6 +345,13 @@ python train_multirocket_fixed.py \
 - deployment embedded
 - ottimizzazione memoria/inferenza
 - pipeline scalabile e riproducibile
+
+---
+
+# 👥 Team
+
+- Lorenzo Meloccaro — MSc, Università Politecnica delle Marche (UNIVPM)
+- Yassir Flavio Suarez Sanchez — MSc, Università Politecnica delle Marche (UNIVPM)
 
 ---
 
