@@ -1,0 +1,11 @@
+{
+  "n_features": 50048,
+  "input_shape": [
+    1,
+    50048
+  ],
+  "output_shape": [
+    1,
+    1
+  ]
+}

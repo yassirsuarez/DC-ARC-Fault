@@ -1,0 +1,35 @@
+{
+  "model": "MultiRocket GPU v2 + Ridge",
+  "normativa": "UL1699B",
+  "fs_hz": 10000,
+  "n_features": 29350,
+  "best_threshold": 0.3,
+  "class_weight": "balanced",
+  "smote_applied": false,
+  "rocket": {
+    "n_kernels": 1000,
+    "max_dilations": 10,
+    "device": "cuda"
+  },
+  "metrics": {
+    "accuracy": 0.9892,
+    "balanced_accuracy": 0.9857,
+    "f1_arc": 0.9915,
+    "roc_auc": 0.9999,
+    "avg_precision": 0.9999,
+    "detected": 4517,
+    "missed": 3,
+    "false_positives": 74,
+    "true_negatives": 2567,
+    "detection_rate_pct": 99.93,
+    "false_positive_rate_pct": 2.8,
+    "ul1699b_conforme": true,
+    "cv_balanced_accuracy_mean": NaN,
+    "cv_balanced_accuracy_std": NaN,
+    "cv_f1_mean": NaN,
+    "cv_f1_std": NaN,
+    "shuffle_ok": true,
+    "f1_real": 0.9915,
+    "f1_shuffle": 0.6355
+  }
+}
