@@ -1,0 +1,10 @@
+{
+  "input_len": 250,
+  "n_kernels_0": 20,
+  "n_kernels_1": 20,
+  "n_hydra_idx": 84,
+  "n_features": 49728,
+  "n_coef": 50048,
+  "ram_needed_kb": 194.2,
+  "flash_needed_kb": 632.6
+}

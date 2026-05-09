@@ -31,6 +31,7 @@ import os
 import sys
 import time
 import warnings
+
 warnings.filterwarnings("ignore")
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"   # evita conflitto OpenMP su Windows
@@ -42,7 +43,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 import torch
-
+from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import (
     balanced_accuracy_score, classification_report,
     confusion_matrix, f1_score,
@@ -155,6 +156,7 @@ def train_inceptiontime_tsai(
     batch_size: int,
     device: torch.device,
     out_dir: str,
+    class_weights=None,  
 ) -> tuple:
     """
     Addestra InceptionTime con tsai su GPU.
@@ -214,7 +216,7 @@ def train_inceptiontime_tsai(
     learn = Learner(
         dls,
         model,
-        loss_func=CrossEntropyLossFlat(),
+        loss_func=CrossEntropyLossFlat(weight=class_weights),
         metrics=[accuracy],
     )
 
@@ -499,6 +501,18 @@ def main():
     X_train = data_tr["X"]
     y_train = data_tr["y"]
 
+    classes = np.unique(y_train)
+
+    class_weights = compute_class_weight(
+        class_weight='balanced',
+        classes=classes,
+        y=y_train
+     )
+
+    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+
+    log.info("Class weights: %s", class_weights)
+
     log.info("Caricamento dataset TEST: %s", args.test)
     data_te = np.load(args.test)
     X_test  = data_te["X"]
@@ -521,7 +535,7 @@ def main():
              n_samples_per_series,
              n_samples_per_series / FS_HZ * 1000,
              max_pc)
-    X_train, y_train = undersample(X_train, y_train, max_per_class=max_pc)
+    #X_train, y_train = undersample(X_train, y_train, max_per_class=max_pc)
 
     # tsai vuole shape (n, canali, timepoints)
     X_tr = X_train[:, np.newaxis, :].astype(np.float32)
@@ -544,6 +558,7 @@ def main():
         batch_size=args.batch_size,
         device=device,
         out_dir=args.out,
+        class_weights=class_weights,
     )
 
     # ── metriche ──────────────────────────────────────────────────────────────

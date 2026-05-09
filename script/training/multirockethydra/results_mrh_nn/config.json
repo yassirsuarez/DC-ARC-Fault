@@ -1,0 +1,18 @@
+{
+  "model": "MultiRocket + ArcNet",
+  "n_kernels": 6250,
+  "n_features": 49728,
+  "hidden": [
+    128,
+    64
+  ],
+  "downsample": 4,
+  "n_params_nn": 6374017,
+  "flash_kb_nn": 24898.5,
+  "metrics": {
+    "accuracy": 0.995950286272867,
+    "balanced_accuracy": 0.9956901967945904,
+    "f1": 0.99679168049563,
+    "roc_auc": 0.9999217579825287
+  }
+}

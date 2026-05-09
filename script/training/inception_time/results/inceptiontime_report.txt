@@ -1,0 +1,28 @@
+TRAINING REPORT — InceptionTime (tsai + PyTorch)
+Normativa di riferimento: UL 1699B
+============================================================
+
+Dataset train: C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_train.npz
+Dataset test:  C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz
+Epoche:        50
+Batch size:    64
+Device:        cuda
+
+========================================
+Risultati
+========================================
+  backend: tsai+PyTorch
+  device: cuda
+  train_time_s: 1909.8
+  balanced_accuracy: 0.9887
+  f1_arc: 0.9889
+  roc_auc: 0.9997
+  avg_precision: 0.9998
+  best_threshold: 0.1
+  detected: 4425
+  missed: 95
+  false_positives: 4
+  true_negatives: 2637
+  detection_rate_pct: 97.9
+  false_positive_rate_pct: 0.15
+  ul1699b_conforme: True
