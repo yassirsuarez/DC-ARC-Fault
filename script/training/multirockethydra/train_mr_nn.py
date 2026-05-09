@@ -3,9 +3,7 @@
 train_mrh_nn.py
 ===============
 Pipeline:
-    MultiRocket (aeon) → feature extraction
-    ArcNet (PyTorch)   → classificatore leggero
-    Export → arcnet.onnx per ST Edge AI
+    MultiRocket → PCA(256) → ArcNet → arcnet.onnx
 
 USO:
     python train_mrh_nn.py train.npz test.npz
@@ -21,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from sklearn.decomposition import PCA
 from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score,
     f1_score, roc_auc_score,
@@ -51,13 +50,12 @@ def load_dataset(path, downsample=4):
 # MULTIROCKET TRANSFORM
 # =============================================================================
 def fit_transform_rocket(X_train, X_test):
-
     print("  Fitting MultiRocket...")
     t0 = time.time()
 
     tr = MultiRocket(
         random_state=RANDOM_STATE,
-        n_jobs=1
+        n_jobs=1,
     )
 
     F_train = tr.fit_transform(X_train)
@@ -93,11 +91,30 @@ class FeatureScaler:
 
 
 # =============================================================================
+# PCA WRAPPER
+# =============================================================================
+def fit_pca(F_train, F_test, n_components=256):
+    print(f"\n  Fitting PCA({n_components})...")
+    t0 = time.time()
+
+    pca = PCA(n_components=n_components, random_state=RANDOM_STATE)
+    P_train = pca.fit_transform(F_train).astype(np.float32)
+    P_test  = pca.transform(F_test).astype(np.float32)
+
+    var_explained = pca.explained_variance_ratio_.sum() * 100
+    print(f"  Done in {time.time()-t0:.1f}s")
+    print(f"  Variance explained  : {var_explained:.2f}%")
+    print(f"  Shape after PCA     : {P_train.shape}")
+
+    return P_train, P_test, pca
+
+
+# =============================================================================
 # ARCNET — Dense NN leggera per STM32
 # =============================================================================
 class ArcNet(nn.Module):
 
-    def __init__(self, n_features, hidden=(128, 64), dropout=0.3):
+    def __init__(self, n_features, hidden=(64, 32), dropout=0.3):
         super().__init__()
 
         layers = []
@@ -120,10 +137,10 @@ class ArcNet(nn.Module):
 
 
 # =============================================================================
-# WEIGHTED SAMPLER (dataset sbilanciato)
+# WEIGHTED SAMPLER
 # =============================================================================
 def make_sampler(y):
-    counts = np.bincount(y.astype(int))
+    counts  = np.bincount(y.astype(int))
     weights = 1.0 / counts
     sw = torch.tensor([weights[int(l)] for l in y])
     return WeightedRandomSampler(sw, len(sw))
@@ -161,14 +178,14 @@ def evaluate(model, loader, device):
 
 
 # =============================================================================
-# EXPORT ONNX
+# EXPORT ONNX (solo ArcNet — input = PCA features)
 # =============================================================================
 def export_onnx(model, n_features, out_dir):
     import onnx
 
     model.eval()
-    device = next(model.parameters()).device
-    dummy = torch.randn(1, n_features).to(device)
+    device   = next(model.parameters()).device
+    dummy    = torch.randn(1, n_features).to(device)
     out_path = os.path.join(out_dir, "arcnet.onnx")
 
     torch.onnx.export(
@@ -184,7 +201,6 @@ def export_onnx(model, n_features, out_dir):
     m = onnx.load(out_path)
     m.ir_version = 7
 
-    # Rimuovi initializer dagli input
     inputs_to_keep = [i for i in m.graph.input if i.name == "input"]
     del m.graph.input[:]
     m.graph.input.extend(inputs_to_keep)
@@ -198,47 +214,146 @@ def export_onnx(model, n_features, out_dir):
 # EXPORT SCALER HEADER C
 # =============================================================================
 def export_scaler_header(scaler, out_dir):
-
     mean  = scaler.mean
     scale = scaler.scale
     n     = len(mean)
 
     lines = []
-    lines.append("/* scaler.h — AUTO-GENERATED, DO NOT EDIT */")
+    lines.append("/* scaler.h - AUTO-GENERATED, DO NOT EDIT */")
     lines.append("#ifndef SCALER_H")
     lines.append("#define SCALER_H")
-    lines.append("")
-    lines.append("#include <stdint.h>")
-    lines.append("")
     lines.append(f"#define SCALER_N_FEATURES {n}")
     lines.append("")
-
     lines.append(f"static const float scaler_mean[{n}] = {{")
     for i in range(0, n, 8):
         chunk = mean[i:i+8]
         lines.append("    " + ", ".join(f"{v:.8f}f" for v in chunk) + ",")
     lines.append("};")
     lines.append("")
-
     lines.append(f"static const float scaler_scale[{n}] = {{")
     for i in range(0, n, 8):
         chunk = scale[i:i+8]
         lines.append("    " + ", ".join(f"{v:.8f}f" for v in chunk) + ",")
     lines.append("};")
     lines.append("")
-
     lines.append("static inline void scaler_transform(float* feat, int n)")
     lines.append("{")
     lines.append("    for (int i = 0; i < n; i++)")
     lines.append("        feat[i] = (feat[i] - scaler_mean[i]) / scaler_scale[i];")
     lines.append("}")
-    lines.append("")
     lines.append("#endif /* SCALER_H */")
 
     path = os.path.join(out_dir, "scaler.h")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print("Scaler header saved:", path)
+
+
+# =============================================================================
+# EXPORT PCA HEADER C
+# =============================================================================
+def export_pca_header(pca, scaler_mean, scaler_scale, out_dir):
+    """
+    Esporta PCA come header C.
+    Su STM32: i componenti vanno in Flash esterna (128MB disponibili).
+    """
+    components = pca.components_.astype(np.float32)  # (n_components, n_features)
+    mean_pca   = pca.mean_.astype(np.float32)         # (n_features,)
+    n_comp, n_feat = components.shape
+
+    lines = []
+    lines.append("/* pca.h - AUTO-GENERATED, DO NOT EDIT */")
+    lines.append("/* Mappa in Flash esterna su STM32H7    */")
+    lines.append("#ifndef PCA_H")
+    lines.append("#define PCA_H")
+    lines.append("#include <stdint.h>")
+    lines.append("")
+    lines.append(f"#define PCA_N_COMPONENTS {n_comp}")
+    lines.append(f"#define PCA_N_FEATURES   {n_feat}")
+    lines.append("")
+
+    # Mean scaler (per normalizzare prima di PCA)
+    lines.append("/* StandardScaler mean (applicato prima di PCA) */")
+    lines.append(f"static const float pca_scaler_mean[{n_feat}] = {{")
+    for i in range(0, n_feat, 8):
+        chunk = scaler_mean[i:i+8]
+        lines.append("    " + ", ".join(f"{v:.8f}f" for v in chunk) + ",")
+    lines.append("};")
+    lines.append("")
+
+    lines.append("/* StandardScaler scale */")
+    lines.append(f"static const float pca_scaler_scale[{n_feat}] = {{")
+    for i in range(0, n_feat, 8):
+        chunk = scaler_scale[i:i+8]
+        lines.append("    " + ", ".join(f"{v:.8f}f" for v in chunk) + ",")
+    lines.append("};")
+    lines.append("")
+
+    # PCA mean
+    lines.append("/* PCA mean */")
+    lines.append(f"static const float pca_mean[{n_feat}] = {{")
+    for i in range(0, n_feat, 8):
+        chunk = mean_pca[i:i+8]
+        lines.append("    " + ", ".join(f"{v:.8f}f" for v in chunk) + ",")
+    lines.append("};")
+    lines.append("")
+
+    # PCA components — flat row-major
+    lines.append("/* PCA components (n_components x n_features), row-major */")
+    lines.append(f"/* Size: {n_comp * n_feat * 4 / 1024 / 1024:.1f} MB -> Flash esterna */")
+    lines.append(f"static const float pca_components[{n_comp}][{n_feat}] = {{")
+    for c in range(n_comp):
+        row = components[c]
+        lines.append(f"    {{ /* component {c} */")
+        for i in range(0, n_feat, 8):
+            chunk = row[i:i+8]
+            lines.append("        " + ", ".join(f"{v:.8f}f" for v in chunk) + ",")
+        lines.append("    },")
+    lines.append("};")
+    lines.append("")
+
+    # Funzione transform inline
+    lines.append("""
+/* Applica scaler + PCA a un vettore di feature.
+   feat_in  : input  (n_features float)
+   feat_out : output (n_components float)
+   tmp_buf  : buffer temporaneo (n_features float) - alloca in RAM
+*/
+static inline void pca_transform(
+    const float* feat_in,
+    float*       feat_out,
+    float*       tmp_buf)
+{
+    /* 1. StandardScaler */
+    for (int i = 0; i < PCA_N_FEATURES; i++)
+        tmp_buf[i] = (feat_in[i] - pca_scaler_mean[i]) / pca_scaler_scale[i];
+
+    /* 2. Sottrai media PCA */
+    for (int i = 0; i < PCA_N_FEATURES; i++)
+        tmp_buf[i] -= pca_mean[i];
+
+    /* 3. Proietta sui componenti */
+    for (int c = 0; c < PCA_N_COMPONENTS; c++)
+    {
+        float s = 0.0f;
+        for (int i = 0; i < PCA_N_FEATURES; i++)
+            s += pca_components[c][i] * tmp_buf[i];
+        feat_out[c] = s;
+    }
+}
+""")
+    lines.append("#endif /* PCA_H */")
+
+    path = os.path.join(out_dir, "pca.h")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("PCA header saved:", path)
+
+    # Stima dimensioni
+    comp_mb  = n_comp * n_feat * 4 / 1024 / 1024
+    mean_kb  = n_feat * 4 / 1024
+    print(f"  PCA components : {comp_mb:.1f} MB  (Flash esterna)")
+    print(f"  PCA mean       : {mean_kb:.1f} KB")
 
 
 # =============================================================================
@@ -249,14 +364,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("train")
     parser.add_argument("test")
-    parser.add_argument("--out",        default="./results_mrh_nn")
-    parser.add_argument("--epochs",     type=int,   default=30)
-    parser.add_argument("--batch-size", type=int,   default=64)
-    parser.add_argument("--lr",         type=float, default=1e-3)
-    parser.add_argument("--hidden",     type=int,   nargs="+", default=[128, 64])
-    parser.add_argument("--dropout",    type=float, default=0.3)
-    parser.add_argument("--downsample", type=int,   default=4)
-    parser.add_argument("--n-kernels",  type=int,   default=6250)
+    parser.add_argument("--out",          default="./results_mrh_nn")
+    parser.add_argument("--epochs",       type=int,   default=30)
+    parser.add_argument("--batch-size",   type=int,   default=64)
+    parser.add_argument("--lr",           type=float, default=1e-3)
+    parser.add_argument("--hidden",       type=int,   nargs="+", default=[64, 32])
+    parser.add_argument("--dropout",      type=float, default=0.3)
+    parser.add_argument("--downsample",   type=int,   default=4)
+    parser.add_argument("--pca-components", type=int, default=256)
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -278,9 +393,7 @@ def main():
     print("MULTIROCKET TRANSFORM")
     print("=" * 60)
 
-    F_train, F_test, transformer = fit_transform_rocket(
-        X_train, X_test
-    )
+    F_train, F_test, transformer = fit_transform_rocket(X_train, X_test)
 
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
@@ -292,8 +405,13 @@ def main():
     F_test  = scaler.transform(F_test)
     print(f"Feature range: {F_train.min():.3f} -> {F_train.max():.3f}")
 
-    n_features = F_train.shape[1]
-    print(f"N features: {n_features}")
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 60)
+    print(f"PCA ({args.pca_components} components)")
+    print("=" * 60)
+
+    P_train, P_test, pca = fit_pca(F_train, F_test, args.pca_components)
+    n_features = P_train.shape[1]
 
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
@@ -301,11 +419,11 @@ def main():
     print("=" * 60)
 
     train_ds = TensorDataset(
-        torch.from_numpy(F_train),
+        torch.from_numpy(P_train),
         torch.from_numpy(y_train.astype(np.float32))
     )
     test_ds = TensorDataset(
-        torch.from_numpy(F_test),
+        torch.from_numpy(P_test),
         torch.from_numpy(y_test.astype(np.float32))
     )
 
@@ -336,7 +454,6 @@ def main():
     t0        = time.time()
 
     for epoch in range(1, args.epochs + 1):
-
         loss = train_epoch(model, train_loader, optimizer, criterion, device)
         scheduler.step()
 
@@ -383,12 +500,14 @@ def main():
 
     export_onnx(model, n_features, args.out)
     export_scaler_header(scaler, args.out)
+    export_pca_header(pca, scaler.mean, scaler.scale, args.out)
 
     # Salva bundle completo
     bundle = {
         "transformer":   transformer,
         "scaler_mean":   scaler.mean,
         "scaler_scale":  scaler.scale,
+        "pca":           pca,
         "n_features":    n_features,
         "hidden":        args.hidden,
         "metrics": {
@@ -403,14 +522,15 @@ def main():
         pickle.dump(bundle, f)
 
     cfg = {
-        "model":       "MultiRocket + ArcNet",
-        "n_kernels":   args.n_kernels,
-        "n_features":  n_features,
-        "hidden":      args.hidden,
-        "downsample":  args.downsample,
-        "n_params_nn": n_params,
-        "flash_kb_nn": round(n_params * 4 / 1024, 1),
-        "metrics":     bundle["metrics"],
+        "model":          "MultiRocket + PCA + ArcNet",
+        "n_features_raw": 49728,
+        "pca_components": args.pca_components,
+        "n_features_pca": n_features,
+        "hidden":         args.hidden,
+        "downsample":     args.downsample,
+        "n_params_nn":    n_params,
+        "flash_kb_nn":    round(n_params * 4 / 1024, 1),
+        "metrics":        bundle["metrics"],
     }
 
     with open(os.path.join(args.out, "config.json"), "w", encoding="utf-8") as f:
@@ -421,25 +541,34 @@ def main():
     print("MEMORY ESTIMATE STM32H7")
     print("=" * 60)
 
-    scaler_flash = (len(scaler.mean) + len(scaler.scale)) * 4 / 1024
-    nn_flash     = n_params * 4 / 1024
-    feat_ram     = n_features * 4 / 1024
+    rocket_c_kb  = (len(transformer.parameter[0]) * 3 * 4) / 1024
+    scaler_mb    = (len(scaler.mean) * 2 * 4) / 1024 / 1024
+    pca_mb       = (args.pca_components * 49728 * 4) / 1024 / 1024
+    nn_kb        = n_params * 4 / 1024
+    feat_ram_kb  = 49728 * 4 / 1024
+    pca_ram_kb   = args.pca_components * 4 / 1024
 
-    print(f"  Scaler (Flash)   : {scaler_flash:.1f} KB")
-    print(f"  ArcNet (Flash)   : {nn_flash:.1f} KB")
-    print(f"  Feature buf (RAM): {feat_ram:.1f} KB")
-    print(f"  TOTALE Flash     : {scaler_flash + nn_flash:.1f} KB")
-    print(f"  TOTALE RAM       : {feat_ram:.1f} KB")
+    print(f"  Rocket kernels (Flash int) : ~{rocket_c_kb:.1f} KB")
+    print(f"  Scaler mean+scale (Flash)  : ~{scaler_mb:.1f} MB  -> Flash esterna")
+    print(f"  PCA components (Flash)     : ~{pca_mb:.1f} MB  -> Flash esterna")
+    print(f"  ArcNet (Flash int)         : ~{nn_kb:.1f} KB")
+    print(f"  Feature buffer (RAM)       : ~{feat_ram_kb:.1f} KB")
+    print(f"  PCA output buffer (RAM)    : ~{pca_ram_kb:.1f} KB")
+    print()
+    print(f"  Flash interna usata        : ~{rocket_c_kb + nn_kb:.1f} KB")
+    print(f"  Flash esterna usata        : ~{scaler_mb + pca_mb:.1f} MB")
+    print(f"  RAM usata                  : ~{feat_ram_kb + pca_ram_kb:.1f} KB")
 
     print("\n" + "=" * 60)
     print("DONE")
     print("=" * 60)
     print(f"""
 Output in: {args.out}/
-    arcnet.onnx   -> ST Edge AI Developer Cloud
-    scaler.h      -> scaling feature in C su STM32
-    bundle.pkl    -> transformer + scaler per inference PC
-    config.json   -> configurazione e metriche
+    arcnet.onnx  -> ST Edge AI Developer Cloud
+    scaler.h     -> StandardScaler in C
+    pca.h        -> PCA transform in C (Flash esterna)
+    bundle.pkl   -> tutto per inference PC
+    config.json  -> metriche e configurazione
 
 Prossimi step:
     Step 2: export_rocket_transform.c  (kernel MultiRocket in C)
