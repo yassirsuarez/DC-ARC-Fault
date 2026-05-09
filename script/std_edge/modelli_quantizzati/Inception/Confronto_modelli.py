@@ -3,7 +3,7 @@ import onnxruntime as ort
 from tqdm import tqdm
 
 # --- CONFIGURAZIONE PERCORSI ---
-PATH_ORIGINALE = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\inception_time\risultati_inception\inceptiontime.onnx"
+PATH_ORIGINALE = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\inception_time\results\inceptiontime.onnx"
 PATH_QUANTIZZATO = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\std_edge\modelli_quantizzati\Inception\inceptiontime_PerChannel_quant_calibration_data_npz_1.onnx"
 PATH_DATASET = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz"
 
