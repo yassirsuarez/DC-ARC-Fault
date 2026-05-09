@@ -328,8 +328,8 @@ Di seguito sono riportate le accuratezze ottenute dai principali modelli utilizz
 
 | Modello | FP32 Accuracy | INT8 Accuracy |
 |---|---|---|
-| InceptionTime | -- | -- |
-| MCNN | -- | -- |
+| InceptionTime | 98.62%| 98.97% |
+| MCNN | 99.60% | 99.09% |
 | MultiRocket + Hydra | -- | -- |
 
 

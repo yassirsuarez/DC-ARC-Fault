@@ -1,18 +1,19 @@
 {
-  "model": "MultiRocket + ArcNet",
-  "n_kernels": 6250,
-  "n_features": 49728,
+  "model": "MultiRocket + PCA + ArcNet",
+  "n_features_raw": 49728,
+  "pca_components": 256,
+  "n_features_pca": 256,
   "hidden": [
-    128,
-    64
+    64,
+    32
   ],
   "downsample": 4,
-  "n_params_nn": 6374017,
-  "flash_kb_nn": 24898.5,
+  "n_params_nn": 18753,
+  "flash_kb_nn": 73.3,
   "metrics": {
     "accuracy": 0.995950286272867,
-    "balanced_accuracy": 0.9956901967945904,
-    "f1": 0.99679168049563,
-    "roc_auc": 0.9999217579825287
+    "balanced_accuracy": 0.9956114940371876,
+    "f1": 0.9967923902223206,
+    "roc_auc": 0.9998830558282763
   }
 }

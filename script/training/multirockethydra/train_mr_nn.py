@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-train_mrh_nn.py
+train_mr_nn.py
 ===============
 Pipeline:
     MultiRocket → PCA(256) → ArcNet → arcnet.onnx
 
 USO:
-    python train_mrh_nn.py train.npz test.npz
+    python train_mr_nn.py train.npz test.npz
+    python train_mrh_nn.py train.npz test.npz \
+    --epochs 30 \
+    --hidden 64 32 \
+    --pca-components 256 \
+    --downsample 4
 """
 
 import argparse

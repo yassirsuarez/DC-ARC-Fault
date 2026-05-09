@@ -1,9 +1,6 @@
-/* scaler.h — AUTO-GENERATED, DO NOT EDIT */
+/* scaler.h - AUTO-GENERATED, DO NOT EDIT */
 #ifndef SCALER_H
 #define SCALER_H
-
-#include <stdint.h>
-
 #define SCALER_N_FEATURES 49728
 
 static const float scaler_mean[49728] = {
@@ -12449,5 +12446,4 @@ static inline void scaler_transform(float* feat, int n)
     for (int i = 0; i < n; i++)
         feat[i] = (feat[i] - scaler_mean[i]) / scaler_scale[i];
 }
-
 #endif /* SCALER_H */

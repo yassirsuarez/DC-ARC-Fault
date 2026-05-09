@@ -5,10 +5,10 @@ from sklearn.linear_model import RidgeClassifier
 from tqdm import tqdm
 
 # --- CONFIGURAZIONE PERCORSI ---
-PATH_ORIGINALE   = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\onnx\export_hydra\hydra.onnx"
-PATH_QUANTIZZATO = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\std_edge\modelli_quantizzati\hydra\hydra_PerChannel_quant_calibration_hydra_npz_1.onnx"   # ← scaricato da ST Edge AI
+PATH_ORIGINALE   = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\onnx\export_mcnn\hydra.onnx"
+PATH_QUANTIZZATO = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\std_edge\modelli_quantizzati\mcnn\hydra_PerChannel_quant_calibration_hydra_npz_1.onnx"   # ← scaricato da ST Edge AI
 PATH_DATASET     = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz"
-PATH_BUNDLE      = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\hydra\results\hydra_bundle.pkl"
+PATH_BUNDLE      = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\mcnn\results\hydra_bundle.pkl"
 
 
 def predici(sess, ridge, sample_1d):
