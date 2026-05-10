@@ -13,16 +13,16 @@ Risultati
 ========================================
   backend: tsai+PyTorch
   device: cuda
-  train_time_s: 1909.8
-  balanced_accuracy: 0.9887
-  f1_arc: 0.9889
-  roc_auc: 0.9997
-  avg_precision: 0.9998
+  train_time_s: 1929.9
+  balanced_accuracy: 0.9955
+  f1_arc: 0.9968
+  roc_auc: 0.9998
+  avg_precision: 0.9999
   best_threshold: 0.1
-  detected: 4425
-  missed: 95
-  false_positives: 4
-  true_negatives: 2637
-  detection_rate_pct: 97.9
-  false_positive_rate_pct: 0.15
+  detected: 4507
+  missed: 13
+  false_positives: 16
+  true_negatives: 2625
+  detection_rate_pct: 99.71
+  false_positive_rate_pct: 0.61
   ul1699b_conforme: True

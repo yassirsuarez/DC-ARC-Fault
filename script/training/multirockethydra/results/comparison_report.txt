@@ -1,0 +1,77 @@
+========================================================================
+  ARC DETECTION — CONFRONTO MODELLI
+  MultiRocket+Ridge  |  MultiRocketHydra+Ridge  |  MultiRocket+PCA+ArcNet
+========================================================================
+
+  TABELLA 1 — METRICHE DI PERFORMANCE
+------------------------------------------------------------------------
+  Metrica                      MultiRocket + RidgeMultiRocketHydra + RMultiRocket + PCA + 
+------------------------------------------------------------------------
+  Accuracy                                0.9954              0.9965 *            0.9955  
+  Balanced Accuracy                       0.9952              0.9966 *            0.9952  
+  F1 Score                                0.9963              0.9972 *            0.9965  
+  ROC AUC                                 0.9993              0.9966              0.9999 *
+------------------------------------------------------------------------
+  * = miglior valore per quella metrica
+
+  TABELLA 2 — TEMPI
+------------------------------------------------------------------------
+  Tempo                        MultiRocket + RidgeMultiRocketHydra + RMultiRocket + PCA + 
+------------------------------------------------------------------------
+  Training (s)                             163.4              2620.2                47.1 *
+  Totale (s)                               659.6              2710.2               593.5 *
+------------------------------------------------------------------------
+
+  TABELLA 3 — RISORSE EMBEDDED (STM32)
+------------------------------------------------------------------------
+  Risorsa                      MultiRocket + RidgeMultiRocketHydra + RMultiRocket + PCA + 
+------------------------------------------------------------------------
+  Flash interna (KB)                       583.0                 2.2 *              73.5  
+  Flash esterna (MB)                         0.0 *               0.0 *              48.9  
+  RAM necessaria (KB)                      194.2                 0.8 *             195.2  
+------------------------------------------------------------------------
+  STM32 ready                             parziale                  no                  si
+  ONNX export                                   no                  no                  si
+------------------------------------------------------------------------
+
+  TABELLA 4 — CONFUSION MATRICES
+------------------------------------------------------------------------
+  MultiRocket + Ridge
+                            Pred No Arc       Pred Arc
+    Actual No Arc                  2626             15
+    Actual Arc                       18           4502
+
+  MultiRocketHydra + Ridge
+                            Pred No Arc       Pred Arc
+    Actual No Arc                  2633              8
+    Actual Arc                       17           4503
+
+  MultiRocket + PCA + ArcNet
+                            Pred No Arc       Pred Arc
+    Actual No Arc                  2625             16
+    Actual Arc                       16           4504
+
+  TABELLA 5 — DETTAGLIO RISORSE PER MODELLO
+------------------------------------------------------------------------
+  MultiRocket + Ridge
+    rocket_kernels_flash_kb             0.2
+    scaler_flash_kb                     388.5
+    ridge_weights_flash_kb              194.2
+    feature_buffer_ram_kb               194.2
+
+  MultiRocketHydra + Ridge
+    scaler_flash_kb                     1.5
+    ridge_weights_flash_kb              0.8
+    feature_buffer_ram_kb               0.8
+
+  MultiRocket + PCA + ArcNet
+    rocket_kernels_flash_kb             0.2
+    nn_flash_kb                         73.3
+    scaler_flash_mb                     0.38
+    pca_flash_mb                        48.56
+    feature_buffer_ram_kb               194.2
+    pca_output_ram_kb                   1.0
+
+========================================================================
+  Fine report
+========================================================================

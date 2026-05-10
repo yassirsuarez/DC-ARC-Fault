@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_dataset.py
+build_dataset_new.py
 ================
 Costruisce il dataset di addestramento per il classificatore real-time
 di archi elettrici in impianti fotovoltaici DC.
@@ -28,7 +28,7 @@ Parametri principali (modificabili):
   MAX_WIN_PER_CLASS  max finestre per classe per file (evita squilibri)
 
 Uso:
-    python build_dataset.py <cartella_dataset> [--out <cartella>]
+    python build_dataset_new.py <cartella_dataset> [--out <cartella>]
                             [--exclude-low-voltage]
 
 Output:

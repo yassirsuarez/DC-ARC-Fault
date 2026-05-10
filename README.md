@@ -5,24 +5,24 @@ Pipeline completa per la rilevazione di **DC Arc Fault** in impianti fotovoltaic
 Il progetto integra:
 
 - preprocessing avanzato di serie temporali
-- controllo del data leakage
-- training di modelli Deep Learning e feature-based
-- esportazione ONNX
-- quantizzazione INT8
-- benchmark edge-oriented su STM32
+- controllo del **data leakage**
+- training di modelli **Deep Learning** e **feature-based**
+- esportazione in formato **ONNX**
+- quantizzazione **INT8**
+- benchmark edge-oriented su **STM32**
 
 ---
 
 # 🧠 Obiettivo del Progetto
 
-L'obiettivo del progetto è sviluppare un sistema di classificazione in grado di identificare fault da arco elettrico DC in impianti fotovoltaici, ottimizzando contemporaneamente:
+L’obiettivo del progetto è sviluppare un sistema di classificazione capace di identificare fault da arco elettrico DC in impianti fotovoltaici, ottimizzando contemporaneamente:
 
 - accuratezza del modello
-- robustezza contro il data leakage
+- robustezza rispetto al **data leakage**
 - compatibilità con sistemi embedded
-- inferenza real-time su hardware edge
+- inferenza **real-time** su hardware edge
 
-L'intera pipeline è progettata per essere:
+L’intera pipeline è progettata per essere:
 
 - riproducibile
 - scalabile
@@ -33,61 +33,62 @@ L'intera pipeline è progettata per essere:
 # 📁 Struttura del Progetto
 
 ```text
-PROGETTO_MANUTENZIONE/
+DC-ARC-Fault/
 │
-├── dataset/                                      # DATA MANAGEMENT
-│   ├── dataset/                                  # Dataset Scaricato da kaggle
-│   ├── dataset_new/                              # Dataset preprocessato finale
+├── dataset/                                  # Dataset e preprocessing
+│   ├── dataset/                              # Dataset originale scaricato da Kaggle
+│   ├── dataset_new/                          # Dataset preprocessato finale
 │   │
-│   ├── build_dataset_new.py                      # Windowing e creazione dataset
-│   ├── split_dataset.py                          # Split fisico train/test
-│   ├── check.py                                  # Verifica leakage e integrità
-│   └── Check2.py                                 # Controlli aggiuntivi dataset
+│   ├── build_dataset_new.py                  # Sliding window + preprocessing
+│   ├── split_dataset.py                      # Split fisico train/test
+│   └── dataset_leakage_check.py              # Verifica data leakage
 │
 ├── script/
 │   │
-│   ├── training/                                 # FASE 1 — TRAINING
+│   ├── training/                             # FASE 1 — Training modelli
 │   │   │
 │   │   ├── inception_time/
-│   │   │   ├── risultati_finali/
-│   │   │   ├── *.keras                           # Checkpoint modelli
+│   │   │   ├── results/
+│   │   │   ├── train_inceptiontime.py
+│   │   │   └── *.keras
 │   │   │
 │   │   ├── mcnn/
-│   │   │   └── ...
+│   │   │   ├── results/
+│   │   │   └── train_mcnn.py
 │   │   │
 │   │   └── multirockethydra/
-│   │       └── ...
 │   │
-│   ├── onnx/                                     # FASE 2 — EXPORT & QUANTIZATION
-│   │   │
-│   │   ├── dataset_ottimizzazione/
-│   │   │   └── calibration_inceptiontime/
+│   ├── onnx/                                 # FASE 2 — Export ONNX
 │   │   │
 │   │   ├── export_mcnn/
-│   │   │
-│   │   ├── dataset_calibrazione_inception.py
-│   │   ├── dataset_calibrazione_mrh.py
 │   │   ├── export_mcnn.py
-│   │   └── export_mrh.py
+│   │   └── export_mr.py
 │   │
-│   └── std_edge/modelli_quantizzati/             # FASE 3 — EDGE AI DEPLOYMENT
+│   └── st_edge/                              # FASE 3 — Edge AI deployment
 │       │
-│       ├── Inception/
-│       │   ├── Confronto_modelli.py
-│       │   └── inceptiontime_PerChannel_quant_*.onnx
+│       ├── dataset_calibrazione/             # Dataset per quantizzazione
+│       │   ├── calibration_inceptiontime/
+│       │   ├── dataset_calibrazione_inception.py
+│       │   └── dataset_calibrazione_mrh.py
 │       │
-│       ├── mcnn/
-│       │   ├── Confronto_modelli.py
-│       │   └── hydra_PerChannel_quant_*.onnx
-│       │
-│       └── multirockethydra/
-│           └── Confronto_modelli.py
+│       └── modelli_quantizzati/
+│           │
+│           ├── inception/
+│           │   ├── Confronto_modelli.py
+│           │   └── inceptiontime_PerChannel_quant_*.onnx
+│           │
+│           ├── mcnn/
+│           │   ├── Confronto_modelli.py
+│           │   └── hydra_PerChannel_quant_*.onnx
+│           │
+│           └── multirocket/
+│               ├── Confronto_modelli.py
+│               └── *.onnx
 │
-├── pipeline.png                                  # Schema della pipeline
-├── requirements.txt                              # Dipendenze Python
+├── pipeline.png                              # Schema pipeline
+├── requirements.txt                          # Dipendenze
 └── README.md
 ```
-
 ---
 
 # ⚙️ Installazione
@@ -96,7 +97,7 @@ PROGETTO_MANUTENZIONE/
 
 ```bash
 git clone <repository-url>
-cd PROGETTO_MANUTENZIONE
+cd DC-ARC-Fault
 ```
 
 ---
@@ -133,19 +134,35 @@ Il progetto utilizza il dataset pubblico:
 
 ## Photovoltaic (PV) DC Arc-Fault Library
 
-https://ieee-dataport.org/open-access/photovoltaic-pv-dc-arc-library
+[IEEE DataPort – Photovoltaic (PV) DC Arc-Fault Library](https://ieee-dataport.org/open-access/photovoltaic-pv-dc-arc-library)
 
-Dal dataset originale vengono estratti i segnali di:
+Dal dataset originale vengono estratti i seguenti segnali elettrici:
 
-- corrente
-- tensione
-- potenza
+- **Corrente (Current)**
+- **Tensione (Voltage)**
+- **Potenza (Power)**
 
-Dataset preprocessato disponibile anche su Kaggle:
+È disponibile anche una versione preprocessata su Kaggle:
 
-https://www.kaggle.com/datasets/yassirsuarez/dc-arc-fault
+[Kaggle – DC Arc Fault Dataset](https://www.kaggle.com/datasets/yassirsuarez/dc-arc-fault)
 
-I segnali vengono successivamente trasformati in finestre temporali supervisionate utilizzabili dai modelli di classificazione.
+## Download del dataset
+
+Scaricare il dataset da Kaggle e inserirlo nella cartella:
+
+```text
+dataset/dataset/
+```
+
+Struttura attesa:
+
+```text
+dataset/
+└── dataset/
+    ├── E001_0050V_00.50A_G001
+    ├── E001_0050V_00.50A_G002
+    └── ...
+```
 
 ---
 
@@ -153,70 +170,154 @@ I segnali vengono successivamente trasformati in finestre temporali supervisiona
 
 ![Pipeline](pipeline.png)
 
-La pipeline è suddivisa in sei fasi principali.
+La pipeline è suddivisa in **sei fasi principali**, dalla preparazione dei dati fino al deployment edge.
 
 ---
 
-# 1️⃣ Data Management
+# 1️⃣ Preprocessing & Physical Split
 
-Il dataset grezzo viene:
+In questa fase i segnali grezzi vengono preprocessati tramite:
 
-- validato
-- organizzato
-- convertito in una struttura coerente per il training
+- **Sliding Window** per la segmentazione temporale
+- **Normalizzazione** dei segnali
+- **Costruzione di campioni supervisionati**
 
-Questa fase comprende:
-
-- caricamento dei segnali originali
-- verifica integrità dati
-- preparazione delle serie temporali
-- controllo preliminare leakage
-
-Script principali:
+## Script principali
 
 ```bash
-python check.py
-python Check2.py
+build_dataset_new.py
+split_dataset.py
+```
+
+## Output generato
+
+- **Training Set** → 80%
+- **Test Set** → 20%
+
+Lo split fisico viene eseguito **prima del training** per evitare:
+
+- overlap tra finestre temporali
+- contaminazione tra train e test
+- **temporal data leakage**
+
+Formati di output:
+
+- `.npz` → training
+- `.csv` → analisi/debug
+
+---
+
+# 2️⃣ Data Leakage Verification
+
+In questa fase viene verificata l’assenza di **data leakage** tra training e test set.
+
+Controlli effettuati:
+
+- ricerca di duplicati
+- verifica overlap temporale
+- validazione dello split fisico
+
+## Script principale
+
+```bash
+dataset_leakage_check.py
 ```
 
 ---
 
-# 2️⃣ Preprocessing & Physical Split
+# 3️⃣ Model Training
 
-I segnali vengono preprocessati tramite:
+Addestramento dei modelli di classificazione:
 
-- finestra scorrevole
-- normalizzazione
-- costruzione sample supervisionati
+- **InceptionTime**
+- **MCNN**
+- **MultiRocket**
 
-Script principale:
+Directory:
 
-```bash
-python build_dataset_new.py
+```text
+script/training/
 ```
 
-Successivamente viene effettuato uno split fisico train/test:
+Ogni modello salva:
 
-```bash
-python split_dataset.py
+- checkpoint (`.keras`)
+- metriche
+- risultati finali
+
+---
+
+# 4️⃣ ONNX Export
+
+Conversione dei modelli in formato **ONNX** per deployment multipiattaforma.
+
+Script disponibili in:
+
+```text
+script/onnx/
 ```
 
-## Dataset generati
+Output:
 
-- Train Set → 80%
-- Test Set → 20%
+- modelli `.onnx`
 
-Lo split fisico viene eseguito prima del training per evitare:
+---
 
-- overlap tra finestre
-- contaminazione train/test
-- leakage temporale
+# 5️⃣ INT8 Quantization
 
-I dataset finali vengono salvati nei formati:
+Quantizzazione dei modelli tramite dataset di calibrazione per ridurre:
 
-- `.npz`
-- `.csv`
+- memoria
+- latenza
+- consumo energetico
 
+Formato finale:
+
+- `*_quant.onnx`
+
+---
+
+# 6️⃣ Edge Deployment (STM32)
+
+Benchmark dei modelli quantizzati tramite **ST Edge AI** su hardware embedded STM32.
+
+Metriche valutate:
+
+- tempo di inferenza
+- utilizzo RAM
+- utilizzo Flash
+- accuratezza post-quantizzazione
+
+Directory:
+
+```text
+script/st_edge/
+```
+
+---
+
+# 📊 Risultati
+
+Il progetto confronta diversi modelli considerando:
+
+- accuracy
+- latency
+- memory footprint
+- deployability su edge
+
+---
+
+# 👨‍💻 Tecnologie Utilizzate
+
+- Python
+- TensorFlow / Keras
+- ONNX
+- NumPy / Pandas
+- Scikit-learn
+- ST Edge AI
+- STM32
+
+---
 ---
 
 # 3️⃣ Training & Feature Extraction

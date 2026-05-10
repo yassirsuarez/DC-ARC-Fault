@@ -1,0 +1,4 @@
+model,flash_interna_kb,flash_esterna_mb,ram_kb,stm32_ready,onnx_export
+MultiRocket + Ridge,583.0,0.0,194.2,parziale,False
+MultiRocketHydra + Ridge,2.2,0.0,0.8,no,False
+MultiRocket + PCA + ArcNet,73.5,48.94,195.2,si,True
