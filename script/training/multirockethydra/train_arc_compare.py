@@ -493,6 +493,9 @@ def run_ridge(X_train, y_train, X_test, y_test, args, out_dir):
     metrics = compute_metrics(y_test, preds, probs)
     print_metrics(metrics, y_test, preds)
 
+    res_rocket = estimate_multirocket(transformer)
+    res_clf    = estimate_ridge_clf(model, scaler, n_features)
+
     total_time = time.time() - t_start
     result = {
         "model":        "MultiRocket + Ridge",
@@ -501,13 +504,21 @@ def run_ridge(X_train, y_train, X_test, y_test, args, out_dir):
         "train_time_s": round(train_time, 2),
         "total_time_s": round(total_time, 2),
         "metrics":      metrics,
+        "_res_rocket":  res_rocket,
+        "_res_clf":     res_clf,
     }
 
     with open(os.path.join(out_dir, "config.json"), "w") as f:
-        # non serializzare _probs e _labels nel json (troppo grandi)
-        cfg = {k: v for k, v in result.items() if k != "metrics"}
+        cfg = {k: v for k, v in result.items()
+               if not k.startswith("_") and k != "metrics"}
         cfg["metrics"] = {k: v for k, v in metrics.items()
                           if not k.startswith("_")}
+        cfg["resources"] = {
+            "multirocket_flash_kb": res_rocket["flash_kb"],
+            "clf_flash_kb":         res_clf["clf_flash_kb"],
+            "total_flash_kb":       round(res_rocket["flash_kb"] + res_clf["clf_flash_kb"], 1),
+            "ram_kb":               res_clf["feat_ram_kb"],
+        }
         json.dump(cfg, f, indent=2)
 
     bundle = {"model": model, "transformer": transformer,

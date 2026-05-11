@@ -1,0 +1,38 @@
+{
+  "model": "MultiRocket + PCA + ArcNet",
+  "pca_components": 256,
+  "hidden": [
+    64,
+    32
+  ],
+  "dropout": 0.3,
+  "epochs": 30,
+  "n_params_nn": 18753,
+  "downsample": 4,
+  "train_time_s": 31.35,
+  "total_time_s": 384.11,
+  "metrics": {
+    "accuracy": 0.99553135037006,
+    "balanced_accuracy": 0.9952009328727051,
+    "f1": 0.9964601769911504,
+    "roc_auc": 0.9998983021314667,
+    "avg_precision": 0.9999407295504095,
+    "confusion_matrix": [
+      [
+        2625,
+        16
+      ],
+      [
+        16,
+        4504
+      ]
+    ]
+  },
+  "resources": {
+    "multirocket_flash_kb": 24.4,
+    "clf_flash_interna_kb": 656.0,
+    "clf_flash_esterna_mb": 48.56,
+    "total_flash_interna_kb": 680.4,
+    "ram_kb": 195.2
+  }
+}

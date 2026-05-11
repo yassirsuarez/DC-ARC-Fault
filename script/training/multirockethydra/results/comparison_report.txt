@@ -1,0 +1,53 @@
+========================================================================
+  ARC DETECTION — CONFRONTO MODELLI
+  MultiRocket+Ridge  |  MultiRocketHydra+Ridge  |  MR+PCA+ArcNet
+========================================================================
+
+  TABELLA 1 — METRICHE DI PERFORMANCE
+------------------------------------------------------------------------
+  Metrica                      MultiRocket + RidgeMultiRocketHydra + RMultiRocket + PCA + 
+------------------------------------------------------------------------
+  Accuracy                                0.9954              0.9965 *            0.9955  
+  Balanced Accuracy                       0.9952              0.9966 *            0.9952  
+  F1 Score                                0.9963              0.9972 *            0.9965  
+  ROC AUC                                 0.9993              0.9966              0.9999 *
+  Avg Precision                           0.9997              0.9968              0.9999 *
+------------------------------------------------------------------------
+  * = miglior valore per quella metrica
+
+  TABELLA 2 — TEMPI
+------------------------------------------------------------------------
+  Tempo                        MultiRocket + RidgeMultiRocketHydra + RMultiRocket + PCA + 
+------------------------------------------------------------------------
+  Training (s)                             156.8              2236.4                31.4 *
+  Totale (s)                               479.1              2294.2               384.1 *
+------------------------------------------------------------------------
+
+  TABELLA 3 — CONFUSION MATRICES
+------------------------------------------------------------------------
+  MultiRocket + Ridge
+                            Pred No Arc       Pred Arc
+    Actual No Arc                  2626             15
+    Actual Arc                       18           4502
+
+  MultiRocketHydra + Ridge
+                            Pred No Arc       Pred Arc
+    Actual No Arc                  2633              8
+    Actual Arc                       17           4503
+
+  MultiRocket + PCA + ArcNet
+                            Pred No Arc       Pred Arc
+    Actual No Arc                  2625             16
+    Actual Arc                       16           4504
+
+========================================================================
+  NOTA SUL DEPLOY STM32
+------------------------------------------------------------------------
+  Tutte e tre le pipeline usano MultiRocket come preprocessing.
+  MultiRocket non ha un export C/ONNX automatico: nessuna pipeline
+  è deployabile su STM32 senza reimplementare i kernel in C.
+  ArcNet è la più avanzata (scaler+PCA+rete già nel bundle),
+  ma il preprocessing MultiRocket è comune a tutti e tre.
+========================================================================
+  Fine report
+========================================================================

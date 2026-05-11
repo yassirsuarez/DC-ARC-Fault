@@ -1,0 +1,4 @@
+model,accuracy,balanced_accuracy,f1,roc_auc,avg_precision,train_time_s,total_time_s
+MultiRocket + Ridge,0.9954,0.9952,0.9963,0.9993,0.9997,156.79,479.12
+MultiRocketHydra + Ridge,0.9965,0.9966,0.9972,0.9966,0.9968,2236.45,2294.16
+MultiRocket + PCA + ArcNet,0.9955,0.9952,0.9965,0.9999,0.9999,31.35,384.11

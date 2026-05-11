@@ -1,0 +1,110 @@
+{
+  "ridge": {
+    "model": "MultiRocket + Ridge",
+    "n_features": 49728,
+    "downsample": 4,
+    "train_time_s": 156.79,
+    "total_time_s": 479.12,
+    "_res_rocket": {
+      "flash_kb": 24.4,
+      "total_params": 6256
+    },
+    "_res_clf": {
+      "scaler_flash_kb": 388.5,
+      "ridge_flash_kb": 194.2,
+      "intercept_flash_kb": 0.0039,
+      "clf_flash_kb": 582.8,
+      "feat_ram_kb": 194.2,
+      "n_weights": 49728
+    },
+    "metrics": {
+      "accuracy": 0.9953917050691244,
+      "balanced_accuracy": 0.9951690161610813,
+      "f1": 0.9963483456899414,
+      "roc_auc": 0.9992539363944337,
+      "avg_precision": 0.9996584032615863,
+      "confusion_matrix": [
+        [
+          2626,
+          15
+        ],
+        [
+          18,
+          4502
+        ]
+      ]
+    }
+  },
+  "hydra": {
+    "model": "MultiRocketHydra + Ridge",
+    "n_kernels": 8,
+    "n_groups": 4,
+    "downsample": 4,
+    "train_time_s": 2236.45,
+    "total_time_s": 2294.16,
+    "metrics": {
+      "accuracy": 0.9965088674766094,
+      "balanced_accuracy": 0.9966048912151136,
+      "f1": 0.9972317572804783,
+      "roc_auc": 0.9966048912151138,
+      "avg_precision": 0.9968461355012077,
+      "confusion_matrix": [
+        [
+          2633,
+          8
+        ],
+        [
+          17,
+          4503
+        ]
+      ]
+    }
+  },
+  "arcnet": {
+    "model": "MultiRocket + PCA + ArcNet",
+    "pca_components": 256,
+    "hidden": [
+      64,
+      32
+    ],
+    "dropout": 0.3,
+    "epochs": 30,
+    "n_params_nn": 18753,
+    "downsample": 4,
+    "train_time_s": 31.35,
+    "total_time_s": 384.11,
+    "_res_rocket": {
+      "flash_kb": 24.4,
+      "total_params": 6256
+    },
+    "_res_clf": {
+      "scaler_flash_kb": 388.5,
+      "pca_mean_flash_kb": 194.2,
+      "pca_components_flash_mb": 48.56,
+      "arcnet_flash_kb": 73.3,
+      "clf_flash_interna_kb": 656.0,
+      "clf_flash_esterna_mb": 48.56,
+      "feat_ram_kb": 194.2,
+      "pca_ram_kb": 1.0,
+      "clf_ram_kb": 195.2,
+      "n_params_arcnet": 18753
+    },
+    "metrics": {
+      "accuracy": 0.99553135037006,
+      "balanced_accuracy": 0.9952009328727051,
+      "f1": 0.9964601769911504,
+      "roc_auc": 0.9998983021314667,
+      "avg_precision": 0.9999407295504095,
+      "confusion_matrix": [
+        [
+          2625,
+          16
+        ],
+        [
+          16,
+          4504
+        ]
+      ]
+    }
+  }
+}

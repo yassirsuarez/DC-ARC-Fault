@@ -1,0 +1,30 @@
+{
+  "model": "MultiRocket + Ridge",
+  "n_features": 49728,
+  "downsample": 4,
+  "train_time_s": 156.79,
+  "total_time_s": 479.12,
+  "metrics": {
+    "accuracy": 0.9953917050691244,
+    "balanced_accuracy": 0.9951690161610813,
+    "f1": 0.9963483456899414,
+    "roc_auc": 0.9992539363944337,
+    "avg_precision": 0.9996584032615863,
+    "confusion_matrix": [
+      [
+        2626,
+        15
+      ],
+      [
+        18,
+        4502
+      ]
+    ]
+  },
+  "resources": {
+    "multirocket_flash_kb": 24.4,
+    "clf_flash_kb": 582.8,
+    "total_flash_kb": 607.2,
+    "ram_kb": 194.2
+  }
+}

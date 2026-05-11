@@ -1,0 +1,25 @@
+{
+  "model": "MultiRocketHydra + Ridge",
+  "n_kernels": 8,
+  "n_groups": 4,
+  "downsample": 4,
+  "train_time_s": 2236.45,
+  "total_time_s": 2294.16,
+  "metrics": {
+    "accuracy": 0.9965088674766094,
+    "balanced_accuracy": 0.9966048912151136,
+    "f1": 0.9972317572804783,
+    "roc_auc": 0.9966048912151138,
+    "avg_precision": 0.9968461355012077,
+    "confusion_matrix": [
+      [
+        2633,
+        8
+      ],
+      [
+        17,
+        4503
+      ]
+    ]
+  }
+}
