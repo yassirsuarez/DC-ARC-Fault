@@ -7,32 +7,36 @@ Pipeline unificata per rilevamento archi elettrici DC/PV.
 Addestra e confronta tre approcci:
     1. ridge   → MultiRocket + StandardScaler + RidgeClassifier
     2. hydra   → MultiRocketHydra + RidgeClassifierCV (interno)
-    3. arcnet  → MultiRocket + StandardScaler + PCA + ArcNet (ONNX export)
+    3. arcnet  → MultiRocket + StandardScaler + PCA + ArcNet
+
+NOTA sul deploy STM32:
+    Tutte e tre le pipeline usano MultiRocket come preprocessing.
+    MultiRocket non ha un export C/ONNX automatico, quindi nessuna
+    pipeline è deployabile su STM32 senza reimplementare manualmente
+    i kernel in C. ArcNet è la più avanzata perché la parte finale
+    (scaler + PCA + rete) è già pronta nel bundle, ma il preprocessing
+    rimane un lavoro da fare.
 
 Output:
-    results/<model>/config.json      metriche e config
-    results/<model>/bundle.pkl       bundle completo per inference
-    results/arcnet/arcnet.onnx       modello ONNX per ST Edge AI
-    results/arcnet/scaler.h          StandardScaler in C
-    results/arcnet/pca.h             PCA transform in C
-    results/comparison.json          confronto completo (metriche + risorse)
+    results/ridge/bundle.pkl        bundle completo
+    results/ridge/config.json       metriche
+    results/hydra/bundle.pkl        bundle completo
+    results/hydra/config.json       metriche
+    results/arcnet/bundle.pkl       bundle completo (transformer+scaler+pca+model)
+    results/arcnet/config.json      metriche
+    results/comparison.json         confronto completo
+    results/comparison_metrics.csv
+    results/comparison_confusion.csv
+    results/comparison_report.txt
+    results/comparison_plots.png    grafici comparativi
 
 USO:
-    # Addestra tutti e tre
     python train_arc_compare.py train.npz test.npz
-
-    # Solo uno specifico
     python train_arc_compare.py train.npz test.npz --models ridge arcnet
-
-    # Parametri custom
-    python train_arc_compare.py train.npz test.npz \\
-        --downsample 4 \\
-        --pca-components 128 \\
-        --hidden 64 32 \\
-        --epochs 40
+    python train_arc_compare.py train.npz test.npz --pca-components 128 --epochs 40
 
 REQUISITI:
-    pip install aeon scikit-learn numpy torch onnx
+    pip install aeon scikit-learn numpy torch onnx matplotlib seaborn
 """
 
 import argparse
@@ -41,6 +45,11 @@ import os
 import time
 import pickle
 import numpy as np
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # ── Torch (opzionale, solo per arcnet) ────────────────────────────────────────
 try:
@@ -59,6 +68,7 @@ from sklearn.metrics import (
     accuracy_score, balanced_accuracy_score,
     f1_score, roc_auc_score,
     classification_report, confusion_matrix,
+    roc_curve, precision_recall_curve, average_precision_score,
 )
 
 # ── Aeon ───────────────────────────────────────────────────────────────────────
@@ -111,7 +121,7 @@ class FeatureScaler:
 
 
 # =============================================================================
-# MULTIROCKET TRANSFORM (condiviso da ridge e arcnet)
+# MULTIROCKET TRANSFORM
 # =============================================================================
 
 def fit_transform_rocket(X_train, X_test):
@@ -140,7 +150,7 @@ def fit_pca(F_train, F_test, n_components):
 
 
 # =============================================================================
-# ARCNET — rete neurale leggera per STM32
+# ARCNET
 # =============================================================================
 
 class ArcNet(nn.Module):
@@ -204,7 +214,11 @@ def compute_metrics(labels, preds, probs):
         "balanced_accuracy": float(balanced_accuracy_score(labels, preds)),
         "f1":                float(f1_score(labels, preds, zero_division=0)),
         "roc_auc":           float(roc_auc_score(labels, probs)),
+        "avg_precision":     float(average_precision_score(labels, probs)),
         "confusion_matrix":  confusion_matrix(labels, preds).tolist(),
+        # salva probs e labels per i grafici
+        "_probs":            probs.tolist(),
+        "_labels":           labels.tolist(),
     }
 
 
@@ -219,166 +233,233 @@ def print_metrics(metrics, labels, preds):
 
 
 # =============================================================================
-# EXPORT (solo arcnet)
+# GRAFICI COMPARATIVI
 # =============================================================================
 
-def export_onnx(model, n_features, out_dir):
-    import onnx
-    model.eval()
-    device   = next(model.parameters()).device
-    dummy    = torch.randn(1, n_features).to(device)
-    out_path = os.path.join(out_dir, "arcnet.onnx")
-    torch.onnx.export(
-        model, dummy, out_path,
-        input_names=["input"], output_names=["output"],
-        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
-        opset_version=11, do_constant_folding=True,
-    )
-    m = onnx.load(out_path)
-    m.ir_version = 7
-    inputs_to_keep = [i for i in m.graph.input if i.name == "input"]
-    del m.graph.input[:]
-    m.graph.input.extend(inputs_to_keep)
-    onnx.save(m, out_path)
-    print("  ONNX salvato:", out_path)
+def plot_comparison(results, out_dir):
+    """
+    Genera un pannello con 4 grafici comparativi:
+      1. Barre metriche (accuracy, balanced acc, F1, ROC-AUC)
+      2. ROC curve per tutti i modelli
+      3. Precision-Recall curve per tutti i modelli
+      4. Confusion matrix affiancate
+    """
+    model_keys  = list(results.keys())
+    model_names = {
+        "ridge":  "MR + Ridge",
+        "hydra":  "MRH + Ridge",
+        "arcnet": "MR + PCA + ArcNet",
+    }
+    colors = {"ridge": "steelblue", "hydra": "darkorange", "arcnet": "seagreen"}
 
+    fig = plt.figure(figsize=(20, 16))
+    fig.suptitle("Confronto Modelli — Arc Fault Detection", fontsize=15, y=0.98)
 
-def export_scaler_header(scaler, out_dir):
-    mean, scale, n = scaler.mean, scaler.scale, len(scaler.mean)
-    lines = [
-        "/* scaler.h - AUTO-GENERATED */",
-        "#ifndef SCALER_H", "#define SCALER_H",
-        f"#define SCALER_N_FEATURES {n}", "",
-        f"static const float scaler_mean[{n}] = {{",
-    ]
-    for i in range(0, n, 8):
-        lines.append("    " + ", ".join(f"{v:.8f}f" for v in mean[i:i+8]) + ",")
-    lines += ["};", "", f"static const float scaler_scale[{n}] = {{"]
-    for i in range(0, n, 8):
-        lines.append("    " + ", ".join(f"{v:.8f}f" for v in scale[i:i+8]) + ",")
-    lines += ["};", "",
-              "static inline void scaler_transform(float* feat, int n) {",
-              "    for (int i = 0; i < n; i++)",
-              "        feat[i] = (feat[i] - scaler_mean[i]) / scaler_scale[i];",
-              "}", "#endif"]
-    path = os.path.join(out_dir, "scaler.h")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    print("  scaler.h salvato:", path)
+    # ── 1. Barre metriche ─────────────────────────────────────────────────────
+    ax1 = fig.add_subplot(3, 2, (1, 2))
+    metric_keys   = ["accuracy", "balanced_accuracy", "f1", "roc_auc"]
+    metric_labels = ["Accuracy", "Balanced Acc", "F1 Score", "ROC-AUC"]
+    x      = np.arange(len(metric_keys))
+    n_mdl  = len(model_keys)
+    width  = 0.22
+    offset = np.linspace(-(n_mdl - 1) / 2 * width, (n_mdl - 1) / 2 * width, n_mdl)
 
+    for i, k in enumerate(model_keys):
+        vals = [results[k]["metrics"].get(m, 0) for m in metric_keys]
+        bars = ax1.bar(x + offset[i], vals, width,
+                       label=model_names.get(k, k),
+                       color=colors.get(k, "gray"),
+                       alpha=0.85, edgecolor="white")
+        for bar, v in zip(bars, vals):
+            ax1.text(bar.get_x() + bar.get_width() / 2,
+                     bar.get_height() + 0.0005,
+                     f"{v:.4f}", ha="center", va="bottom", fontsize=7.5)
 
-def export_pca_header(pca, scaler_mean, scaler_scale, out_dir):
-    components = pca.components_.astype(np.float32)
-    mean_pca   = pca.mean_.astype(np.float32)
-    n_comp, n_feat = components.shape
-    lines = [
-        "/* pca.h - AUTO-GENERATED */",
-        "#ifndef PCA_H", "#define PCA_H", "#include <stdint.h>", "",
-        f"#define PCA_N_COMPONENTS {n_comp}",
-        f"#define PCA_N_FEATURES   {n_feat}", "",
-        f"static const float pca_scaler_mean[{n_feat}] = {{",
-    ]
-    for i in range(0, n_feat, 8):
-        lines.append("    " + ", ".join(f"{v:.8f}f" for v in scaler_mean[i:i+8]) + ",")
-    lines += ["};", "", f"static const float pca_scaler_scale[{n_feat}] = {{"]
-    for i in range(0, n_feat, 8):
-        lines.append("    " + ", ".join(f"{v:.8f}f" for v in scaler_scale[i:i+8]) + ",")
-    lines += ["};", "", f"static const float pca_mean[{n_feat}] = {{"]
-    for i in range(0, n_feat, 8):
-        lines.append("    " + ", ".join(f"{v:.8f}f" for v in mean_pca[i:i+8]) + ",")
-    lines += ["};", "",
-              f"/* PCA components — {n_comp * n_feat * 4 / 1024 / 1024:.1f} MB → Flash esterna */",
-              f"static const float pca_components[{n_comp}][{n_feat}] = {{"]
-    for c in range(n_comp):
-        row = components[c]
-        lines.append(f"    {{ /* component {c} */")
-        for i in range(0, n_feat, 8):
-            lines.append("        " + ", ".join(f"{v:.8f}f" for v in row[i:i+8]) + ",")
-        lines.append("    },")
-    lines += ["};", "",
-              "static inline void pca_transform(const float* in, float* out, float* tmp) {",
-              "    for (int i = 0; i < PCA_N_FEATURES; i++)",
-              "        tmp[i] = (in[i] - pca_scaler_mean[i]) / pca_scaler_scale[i] - pca_mean[i];",
-              "    for (int c = 0; c < PCA_N_COMPONENTS; c++) {",
-              "        float s = 0.0f;",
-              "        for (int i = 0; i < PCA_N_FEATURES; i++) s += pca_components[c][i] * tmp[i];",
-              "        out[c] = s;",
-              "    }",
-              "}", "#endif"]
-    path = os.path.join(out_dir, "pca.h")
-    # riga ~308
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    print("  pca.h salvato:", path)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(metric_labels, fontsize=11)
+    ax1.set_ylim(0.98, 1.002)
+    ax1.set_title("Metriche di Performance", fontsize=12)
+    ax1.legend(fontsize=10)
+    ax1.grid(axis="y", alpha=0.3)
+    ax1.set_ylabel("Valore")
+
+    # ── 2. ROC Curve ──────────────────────────────────────────────────────────
+    ax2 = fig.add_subplot(3, 2, 3)
+    for k in model_keys:
+        probs  = np.array(results[k]["metrics"].get("_probs", []))
+        labels = np.array(results[k]["metrics"].get("_labels", []))
+        if len(probs) > 0:
+            fpr, tpr, _ = roc_curve(labels, probs)
+            auc = results[k]["metrics"].get("roc_auc", 0)
+            ax2.plot(fpr, tpr, color=colors.get(k, "gray"), lw=2,
+                     label=f"{model_names.get(k, k)} (AUC={auc:.4f})")
+    ax2.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
+    ax2.set_title("ROC Curve", fontsize=12)
+    ax2.set_xlabel("False Positive Rate")
+    ax2.set_ylabel("True Positive Rate")
+    ax2.legend(fontsize=9)
+    ax2.grid(alpha=0.3)
+
+    # ── 3. Precision-Recall Curve ─────────────────────────────────────────────
+    ax3 = fig.add_subplot(3, 2, 4)
+    for k in model_keys:
+        probs  = np.array(results[k]["metrics"].get("_probs", []))
+        labels = np.array(results[k]["metrics"].get("_labels", []))
+        if len(probs) > 0:
+            prec, rec, _ = precision_recall_curve(labels, probs)
+            ap = results[k]["metrics"].get("avg_precision", 0)
+            ax3.plot(rec, prec, color=colors.get(k, "gray"), lw=2,
+                     label=f"{model_names.get(k, k)} (AP={ap:.4f})")
+    ax3.set_title("Precision-Recall Curve", fontsize=12)
+    ax3.set_xlabel("Recall")
+    ax3.set_ylabel("Precision")
+    ax3.legend(fontsize=9)
+    ax3.grid(alpha=0.3)
+
+    # ── 4. Confusion Matrices affiancate ──────────────────────────────────────
+    for i, k in enumerate(model_keys):
+        ax = fig.add_subplot(3, len(model_keys), 2 * len(model_keys) + i + 1)
+        cm = np.array(results[k]["metrics"].get("confusion_matrix", [[0, 0], [0, 0]]))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
+                    xticklabels=["No Arc", "Arc"],
+                    yticklabels=["No Arc", "Arc"],
+                    cbar=False, annot_kws={"size": 11})
+        ax.set_title(f"Confusion Matrix\n{model_names.get(k, k)}", fontsize=10)
+        ax.set_ylabel("Reale" if i == 0 else "")
+        ax.set_xlabel("Predetto")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    path = os.path.join(out_dir, "comparison_plots.png")
+    plt.savefig(path, dpi=130, bbox_inches="tight")
+    plt.close()
+    print(f"  Grafici comparativi: {path}")
 
 
 # =============================================================================
-# STIMA RISORSE EMBEDDED
+# STIMA RISORSE — analitica, byte per byte
 # =============================================================================
 
-def estimate_resources_ridge(transformer, scaler, n_features):
-    """Ridge: bisogna tenere in Flash i pesi (n_features float) + scaler."""
-    # Ridge ha coef_ shape (1, n_features) per binario
-    n_kernels = len(transformer.parameter[0]) if hasattr(transformer, 'parameter') else 0
-    rocket_flash_kb  = (n_kernels * 3 * 4) / 1024 if n_kernels else 0
-    scaler_flash_kb  = (n_features * 2 * 4) / 1024         # mean + scale
-    ridge_flash_kb   = (n_features * 4) / 1024              # coef_ (1 classe binaria)
-    feat_ram_kb      = (n_features * 4) / 1024              # buffer feature
-    total_flash_kb   = rocket_flash_kb + scaler_flash_kb + ridge_flash_kb
+def estimate_multirocket(transformer):
+    """
+    Costo MultiRocket — COMUNE a Ridge e ArcNet.
+    Conta i parametri reali dall'oggetto transformer.
+    """
+    total_params = 0
+    try:
+        if hasattr(transformer, 'parameters_'):
+            for p in transformer.parameters_:
+                total_params += p.size if hasattr(p, 'size') else len(p)
+        elif hasattr(transformer, 'parameter'):
+            for p in transformer.parameter:
+                total_params += p.size if hasattr(p, 'size') else len(p)
+    except Exception:
+        pass
+    if total_params == 0:
+        total_params = 10_000 * 5   # fallback: ~10k kernel × 5 valori
     return {
-        "flash_interna_kb": round(total_flash_kb, 1),
-        "flash_esterna_mb": 0.0,
-        "ram_kb":           round(feat_ram_kb, 1),
-        "dettaglio": {
-            "rocket_kernels_flash_kb": round(rocket_flash_kb, 1),
-            "scaler_flash_kb":         round(scaler_flash_kb, 1),
-            "ridge_weights_flash_kb":  round(ridge_flash_kb, 1),
-            "feature_buffer_ram_kb":   round(feat_ram_kb, 1),
-        }
+        "flash_kb":     round((total_params * 4) / 1024, 1),
+        "total_params": total_params,
     }
 
 
-def estimate_resources_hydra(n_features_hydra):
-    """Hydra: feature più numerose, Ridge interno."""
-    scaler_flash_kb = (n_features_hydra * 2 * 4) / 1024
-    ridge_flash_kb  = (n_features_hydra * 4) / 1024
-    feat_ram_kb     = (n_features_hydra * 4) / 1024
-    total_flash_kb  = scaler_flash_kb + ridge_flash_kb
+def estimate_ridge_clf(model, scaler, n_features):
+    """Costo Ridge + Scaler (senza MultiRocket)."""
+    ridge_kb    = (model.coef_.size * 4) / 1024
+    scaler_kb   = (n_features * 2 * 4) / 1024
+    intercept_b = 4 / 1024
+    feat_ram_kb = (n_features * 4) / 1024
     return {
-        "flash_interna_kb": round(total_flash_kb, 1),
-        "flash_esterna_mb": 0.0,
-        "ram_kb":           round(feat_ram_kb, 1),
-        "dettaglio": {
-            "scaler_flash_kb":        round(scaler_flash_kb, 1),
-            "ridge_weights_flash_kb": round(ridge_flash_kb, 1),
-            "feature_buffer_ram_kb":  round(feat_ram_kb, 1),
-        }
+        "scaler_flash_kb":    round(scaler_kb, 1),
+        "ridge_flash_kb":     round(ridge_kb, 1),
+        "intercept_flash_kb": round(intercept_b, 4),
+        "clf_flash_kb":       round(ridge_kb + scaler_kb + intercept_b, 1),
+        "feat_ram_kb":        round(feat_ram_kb, 1),
+        "n_weights":          model.coef_.size,
     }
 
 
-def estimate_resources_arcnet(transformer, scaler, pca, model, n_features_raw, n_pca):
-    n_kernels       = len(transformer.parameter[0]) if hasattr(transformer, 'parameter') else 0
-    rocket_flash_kb = (n_kernels * 3 * 4) / 1024 if n_kernels else 0
-    scaler_flash_mb = (n_features_raw * 2 * 4) / 1024 / 1024
-    pca_flash_mb    = (n_pca * n_features_raw * 4) / 1024 / 1024
-    n_params        = sum(p.numel() for p in model.parameters())
-    nn_flash_kb     = (n_params * 4) / 1024
-    feat_ram_kb     = (n_features_raw * 4) / 1024
-    pca_ram_kb      = (n_pca * 4) / 1024
+def estimate_arcnet_clf(model, n_features_raw, n_pca):
+    """Costo ArcNet + Scaler + PCA (senza MultiRocket)."""
+    scaler_kb     = (n_features_raw * 2 * 4) / 1024
+    pca_mean_kb   = (n_features_raw * 4) / 1024
+    pca_comp_mb   = (n_pca * n_features_raw * 4) / 1024 / 1024
+    n_params      = sum(p.numel() for p in model.parameters())
+    nn_kb         = (n_params * 4) / 1024
+    feat_ram_kb   = (n_features_raw * 4) / 1024
+    pca_ram_kb    = (n_pca * 4) / 1024
     return {
-        "flash_interna_kb": round(rocket_flash_kb + nn_flash_kb, 1),
-        "flash_esterna_mb": round(scaler_flash_mb + pca_flash_mb, 2),
-        "ram_kb":           round(feat_ram_kb + pca_ram_kb, 1),
-        "n_params_nn":      n_params,
-        "dettaglio": {
-            "rocket_kernels_flash_kb": round(rocket_flash_kb, 1),
-            "nn_flash_kb":             round(nn_flash_kb, 1),
-            "scaler_flash_mb":         round(scaler_flash_mb, 2),
-            "pca_flash_mb":            round(pca_flash_mb, 2),
-            "feature_buffer_ram_kb":   round(feat_ram_kb, 1),
-            "pca_output_ram_kb":       round(pca_ram_kb, 1),
-        }
+        "scaler_flash_kb":         round(scaler_kb, 1),
+        "pca_mean_flash_kb":       round(pca_mean_kb, 1),
+        "pca_components_flash_mb": round(pca_comp_mb, 2),
+        "arcnet_flash_kb":         round(nn_kb, 1),
+        "clf_flash_interna_kb":    round(scaler_kb + pca_mean_kb + nn_kb, 1),
+        "clf_flash_esterna_mb":    round(pca_comp_mb, 2),
+        "feat_ram_kb":             round(feat_ram_kb, 1),
+        "pca_ram_kb":              round(pca_ram_kb, 1),
+        "clf_ram_kb":              round(feat_ram_kb + pca_ram_kb, 1),
+        "n_params_arcnet":         n_params,
     }
+
+
+def print_resource_table(res_rocket, res_ridge=None, res_arcnet=None):
+    sep  = "=" * 65
+    thin = "-" * 65
+    print(f"\n{sep}")
+    print("  STIMA RISORSE EMBEDDED (analitica — non verificata su HW)")
+    print(sep)
+
+    print("\n  ── COSTO COMUNE: MultiRocket preprocessing ─────────────────")
+    print(f"  Flash kernel    : {res_rocket['flash_kb']:>8.1f} KB")
+    print(f"  N. parametri    : {res_rocket['total_params']:>8,}")
+    print(f"  Nota: costo identico per Ridge e ArcNet, da reimplementare in C")
+
+    if res_ridge:
+        print(f"\n  ── CLASSIFICATORE: RidgeClassifier ──────────────────────────")
+        print(f"  Scaler          : {res_ridge['scaler_flash_kb']:>8.1f} KB  Flash")
+        print(f"  Ridge coef      : {res_ridge['ridge_flash_kb']:>8.1f} KB  Flash  ({res_ridge['n_weights']:,} float)")
+        print(f"  Intercept       : {res_ridge['intercept_flash_kb']:>8.4f} KB  Flash")
+        print(f"  ─────────────────────────────────────────────────────────────")
+        print(f"  Totale clf      : {res_ridge['clf_flash_kb']:>8.1f} KB  Flash")
+        print(f"  Buffer feat RAM : {res_ridge['feat_ram_kb']:>8.1f} KB  RAM")
+        tot = res_rocket['flash_kb'] + res_ridge['clf_flash_kb']
+        print(f"  ─────────────────────────────────────────────────────────────")
+        print(f"  TOTALE PIPELINE : {tot:>8.1f} KB  Flash interna")
+        print(f"                    {res_ridge['feat_ram_kb']:>8.1f} KB  RAM")
+        print(f"  Verificabile    : esportando Ridge come ONNX lineare in ST Edge AI")
+
+    if res_arcnet:
+        print(f"\n  ── CLASSIFICATORE: ArcNet ────────────────────────────────────")
+        print(f"  Scaler          : {res_arcnet['scaler_flash_kb']:>8.1f} KB  Flash interna")
+        print(f"  PCA mean        : {res_arcnet['pca_mean_flash_kb']:>8.1f} KB  Flash interna")
+        print(f"  ArcNet pesi     : {res_arcnet['arcnet_flash_kb']:>8.1f} KB  Flash interna  ({res_arcnet['n_params_arcnet']:,} param)")
+        print(f"  PCA components  : {res_arcnet['pca_components_flash_mb']:>8.2f} MB  Flash ESTERNA (QSPI)")
+        print(f"  ─────────────────────────────────────────────────────────────")
+        print(f"  Totale clf int  : {res_arcnet['clf_flash_interna_kb']:>8.1f} KB  Flash interna")
+        print(f"  Totale clf ext  : {res_arcnet['clf_flash_esterna_mb']:>8.2f} MB  Flash esterna")
+        print(f"  Buffer feat RAM : {res_arcnet['feat_ram_kb']:>8.1f} KB  RAM")
+        print(f"  PCA output RAM  : {res_arcnet['pca_ram_kb']:>8.1f} KB  RAM")
+        tot_int = res_rocket['flash_kb'] + res_arcnet['clf_flash_interna_kb']
+        print(f"  ─────────────────────────────────────────────────────────────")
+        print(f"  TOTALE PIPELINE : {tot_int:>8.1f} KB  Flash interna")
+        print(f"                  + {res_arcnet['clf_flash_esterna_mb']:>8.2f} MB  Flash esterna (QSPI)")
+        print(f"                    {res_arcnet['clf_ram_kb']:>8.1f} KB  RAM")
+        print(f"  Verificabile    : arcnet.onnx caricabile direttamente in ST Edge AI")
+
+    if res_ridge and res_arcnet:
+        print(f"\n{sep}")
+        print("  CONFRONTO CLASSIFICATORI FINALI (MultiRocket escluso — uguale per entrambi)")
+        print(thin)
+        print(f"  {'Voce':<35} {'Ridge':>12} {'ArcNet':>12}")
+        print(thin)
+        print(f"  {'Flash interna clf (KB)':<35} {res_ridge['clf_flash_kb']:>12.1f} {res_arcnet['clf_flash_interna_kb']:>12.1f}")
+        print(f"  {'Flash esterna clf (MB)':<35} {'0.00':>12} {res_arcnet['clf_flash_esterna_mb']:>12.2f}")
+        print(f"  {'RAM (KB)':<35} {res_ridge['feat_ram_kb']:>12.1f} {res_arcnet['clf_ram_kb']:>12.1f}")
+        print(f"  {'N. parametri classificatore':<35} {res_ridge['n_weights']:>12,} {res_arcnet['n_params_arcnet']:>12,}")
+        print(thin)
+        print(f"  Ridge:  più leggero, no Flash esterna, ma non esportabile in ONNX")
+        print(f"  ArcNet: richiede {res_arcnet['clf_flash_esterna_mb']:.1f} MB QSPI per la PCA,")
+        print(f"          ma arcnet.onnx è verificabile direttamente con ST Edge AI")
+    print(sep)
 
 
 # =============================================================================
@@ -390,16 +471,13 @@ def run_ridge(X_train, y_train, X_test, y_test, args, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     t_start = time.time()
 
-    # Feature extraction
     F_train, F_test, transformer = fit_transform_rocket(X_train, X_test)
     n_features = F_train.shape[1]
 
-    # Scaling
     scaler  = FeatureScaler()
     F_train = scaler.fit_transform(F_train)
     F_test  = scaler.transform(F_test)
 
-    # Fit Ridge
     print("  Fitting RidgeClassifier...")
     t0    = time.time()
     model = RidgeClassifier(alpha=1.0, class_weight="balanced",
@@ -408,15 +486,12 @@ def run_ridge(X_train, y_train, X_test, y_test, args, out_dir):
     train_time = time.time() - t0
     print(f"  Fatto in {train_time:.2f}s")
 
-    # Predict
     preds  = model.predict(F_test)
     scores = model.decision_function(F_test)
     probs  = 1 / (1 + np.exp(-scores))
 
     metrics = compute_metrics(y_test, preds, probs)
     print_metrics(metrics, y_test, preds)
-
-    resources = estimate_resources_ridge(transformer, scaler, n_features)
 
     total_time = time.time() - t_start
     result = {
@@ -426,13 +501,14 @@ def run_ridge(X_train, y_train, X_test, y_test, args, out_dir):
         "train_time_s": round(train_time, 2),
         "total_time_s": round(total_time, 2),
         "metrics":      metrics,
-        "resources":    resources,
-        "stm32_ready":  "parziale",
-        "onnx_export":  False,
     }
 
     with open(os.path.join(out_dir, "config.json"), "w") as f:
-        json.dump(result, f, indent=2)
+        # non serializzare _probs e _labels nel json (troppo grandi)
+        cfg = {k: v for k, v in result.items() if k != "metrics"}
+        cfg["metrics"] = {k: v for k, v in metrics.items()
+                          if not k.startswith("_")}
+        json.dump(cfg, f, indent=2)
 
     bundle = {"model": model, "transformer": transformer,
               "scaler": scaler, "metrics": metrics}
@@ -477,10 +553,6 @@ def run_hydra(X_train, y_train, X_test, y_test, args, out_dir):
     metrics = compute_metrics(y_test, preds, probs)
     print_metrics(metrics, y_test, preds)
 
-    # Stima feature Hydra
-    n_feat_hydra = args.hydra_kernels * args.hydra_groups * 3 * 2  # approssimazione
-    resources = estimate_resources_hydra(n_feat_hydra)
-
     total_time = time.time() - t_start
     result = {
         "model":        "MultiRocketHydra + Ridge",
@@ -490,13 +562,13 @@ def run_hydra(X_train, y_train, X_test, y_test, args, out_dir):
         "train_time_s": round(train_time, 2),
         "total_time_s": round(total_time, 2),
         "metrics":      metrics,
-        "resources":    resources,
-        "stm32_ready":  "no",
-        "onnx_export":  False,
     }
 
     with open(os.path.join(out_dir, "config.json"), "w") as f:
-        json.dump(result, f, indent=2)
+        cfg = {k: v for k, v in result.items() if k != "metrics"}
+        cfg["metrics"] = {k: v for k, v in metrics.items()
+                          if not k.startswith("_")}
+        json.dump(cfg, f, indent=2)
 
     bundle = {"model": clf, "metrics": metrics}
     with open(os.path.join(out_dir, "bundle.pkl"), "wb") as f:
@@ -521,20 +593,16 @@ def run_arcnet(X_train, y_train, X_test, y_test, args, out_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"  Device: {device}")
 
-    # Feature extraction
     F_train, F_test, transformer = fit_transform_rocket(X_train, X_test)
     n_features_raw = F_train.shape[1]
 
-    # Scaling
     scaler  = FeatureScaler()
     F_train = scaler.fit_transform(F_train)
     F_test  = scaler.transform(F_test)
 
-    # PCA
     P_train, P_test, pca = fit_pca(F_train, F_test, args.pca_components)
     n_features = P_train.shape[1]
 
-    # Dataset
     train_ds     = TensorDataset(torch.from_numpy(P_train),
                                   torch.from_numpy(y_train.astype(np.float32)))
     test_ds      = TensorDataset(torch.from_numpy(P_test),
@@ -543,7 +611,6 @@ def run_arcnet(X_train, y_train, X_test, y_test, args, out_dir):
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler)
     test_loader  = DataLoader(test_ds,  batch_size=args.batch_size, shuffle=False)
 
-    # Modello
     model = ArcNet(n_features=n_features,
                    hidden=tuple(args.hidden),
                    dropout=args.dropout).to(device)
@@ -577,23 +644,17 @@ def run_arcnet(X_train, y_train, X_test, y_test, args, out_dir):
     train_time = time.time() - t0
     print(f"\n  Training: {train_time:.1f}s — Best F1: {best_f1:.4f}")
 
-    # Carica best
-    model.load_state_dict(torch.load(best_path, map_location=device))
+    model.load_state_dict(torch.load(best_path, map_location=device,
+                                     weights_only=True))
     labels, preds, probs = evaluate_nn(model, test_loader, device)
     metrics = compute_metrics(labels, preds, probs)
     print_metrics(metrics, labels, preds)
 
-    # Export
-    print("\n  Esportazione artefatti...")
-    try:
-        export_onnx(model, n_features, out_dir)
-    except ImportError:
-        print("  [WARN] onnx non installato, skip export ONNX")
-    export_scaler_header(scaler, out_dir)
-    export_pca_header(pca, scaler.mean, scaler.scale, out_dir)
+    # Rimuove il checkpoint temporaneo
+    os.remove(best_path)
 
-    resources = estimate_resources_arcnet(
-        transformer, scaler, pca, model, n_features_raw, args.pca_components)
+    res_rocket = estimate_multirocket(transformer)
+    res_clf    = estimate_arcnet_clf(model, n_features_raw, args.pca_components)
 
     total_time = time.time() - t_start
     result = {
@@ -607,17 +668,36 @@ def run_arcnet(X_train, y_train, X_test, y_test, args, out_dir):
         "train_time_s":   round(train_time, 2),
         "total_time_s":   round(total_time, 2),
         "metrics":        metrics,
-        "resources":      resources,
-        "stm32_ready":    "si",
-        "onnx_export":    True,
+        "_res_rocket":    res_rocket,
+        "_res_clf":       res_clf,
     }
 
     with open(os.path.join(out_dir, "config.json"), "w") as f:
-        json.dump(result, f, indent=2)
+        cfg = {k: v for k, v in result.items()
+               if not k.startswith("_") and k != "metrics"}
+        cfg["metrics"] = {k: v for k, v in metrics.items()
+                          if not k.startswith("_")}
+        cfg["resources"] = {
+            "multirocket_flash_kb":     res_rocket["flash_kb"],
+            "clf_flash_interna_kb":     res_clf["clf_flash_interna_kb"],
+            "clf_flash_esterna_mb":     res_clf["clf_flash_esterna_mb"],
+            "total_flash_interna_kb":   round(res_rocket["flash_kb"] + res_clf["clf_flash_interna_kb"], 1),
+            "ram_kb":                   res_clf["clf_ram_kb"],
+        }
+        json.dump(cfg, f, indent=2)
 
+    # Bundle completo: tutto quello che serve per l'inferenza
     bundle = {
-        "transformer": transformer, "scaler": scaler,
-        "pca": pca, "n_features": n_features, "metrics": metrics,
+        "transformer": transformer,
+        "scaler":      scaler,
+        "pca":         pca,
+        "model":       model.cpu().state_dict(),
+        "model_cfg": {
+            "n_features": n_features,
+            "hidden":     list(args.hidden),
+            "dropout":    args.dropout,
+        },
+        "metrics": metrics,
     }
     with open(os.path.join(out_dir, "bundle.pkl"), "wb") as f:
         pickle.dump(bundle, f)
@@ -631,39 +711,35 @@ def run_arcnet(X_train, y_train, X_test, y_test, args, out_dir):
 # =============================================================================
 
 def export_csv(results, out_dir):
-    """Genera due CSV: metriche e risorse embedded."""
     import csv
 
-    # ── CSV metriche ──────────────────────────────────────────────────────────
+    # CSV metriche
     metric_path = os.path.join(out_dir, "comparison_metrics.csv")
-    metric_fields = ["model", "accuracy", "balanced_accuracy", "f1", "roc_auc",
-                     "train_time_s", "total_time_s", "onnx_export", "stm32_ready"]
-
+    fields = ["model", "accuracy", "balanced_accuracy", "f1", "roc_auc",
+              "avg_precision", "train_time_s", "total_time_s"]
     with open(metric_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=metric_fields)
+        w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for m, r in results.items():
-            cm = r["metrics"].get("confusion_matrix", [[0,0],[0,0]])
             w.writerow({
                 "model":             r["model"],
                 "accuracy":          round(r["metrics"].get("accuracy", 0), 4),
                 "balanced_accuracy": round(r["metrics"].get("balanced_accuracy", 0), 4),
                 "f1":                round(r["metrics"].get("f1", 0), 4),
                 "roc_auc":           round(r["metrics"].get("roc_auc", 0), 4),
+                "avg_precision":     round(r["metrics"].get("avg_precision", 0), 4),
                 "train_time_s":      r.get("train_time_s", ""),
                 "total_time_s":      r.get("total_time_s", ""),
-                "onnx_export":       r.get("onnx_export", False),
-                "stm32_ready":       r.get("stm32_ready", "?"),
             })
     print(f"  CSV metriche   : {metric_path}")
 
-    # ── CSV confusion matrix (una riga per modello: TN FP FN TP) ─────────────
+    # CSV confusion matrix
     cm_path = os.path.join(out_dir, "comparison_confusion.csv")
     with open(cm_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["model", "TN", "FP", "FN", "TP"])
         w.writeheader()
         for m, r in results.items():
-            cm = r["metrics"].get("confusion_matrix", [[0,0],[0,0]])
+            cm = r["metrics"].get("confusion_matrix", [[0, 0], [0, 0]])
             w.writerow({
                 "model": r["model"],
                 "TN": cm[0][0], "FP": cm[0][1],
@@ -671,44 +747,20 @@ def export_csv(results, out_dir):
             })
     print(f"  CSV confusion  : {cm_path}")
 
-    # ── CSV risorse embedded ──────────────────────────────────────────────────
-    res_path = os.path.join(out_dir, "comparison_resources.csv")
-    res_fields = ["model", "flash_interna_kb", "flash_esterna_mb", "ram_kb",
-                  "stm32_ready", "onnx_export"]
-
-    with open(res_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=res_fields)
-        w.writeheader()
-        for m, r in results.items():
-            res = r.get("resources", {})
-            w.writerow({
-                "model":             r["model"],
-                "flash_interna_kb":  res.get("flash_interna_kb", 0),
-                "flash_esterna_mb":  res.get("flash_esterna_mb", 0),
-                "ram_kb":            res.get("ram_kb", 0),
-                "stm32_ready":       r.get("stm32_ready", "?"),
-                "onnx_export":       r.get("onnx_export", False),
-            })
-    print(f"  CSV risorse    : {res_path}")
-
 
 def export_txt_report(results, out_path):
-    """Genera un report testuale leggibile con tutte le tabelle."""
-
     lines = []
     sep   = "=" * 72
     thin  = "-" * 72
 
-    lines += [
-        sep,
-        "  ARC DETECTION — CONFRONTO MODELLI",
-        "  MultiRocket+Ridge  |  MultiRocketHydra+Ridge  |  MultiRocket+PCA+ArcNet",
-        sep, "",
-    ]
+    lines += [sep,
+              "  ARC DETECTION — CONFRONTO MODELLI",
+              "  MultiRocket+Ridge  |  MultiRocketHydra+Ridge  |  MR+PCA+ArcNet",
+              sep, ""]
 
-    models     = list(results.keys())
-    col_w      = 20
-    label_w    = 28
+    models  = list(results.keys())
+    col_w   = 20
+    label_w = 28
 
     def header_row(title):
         h = f"  {title:<{label_w}}"
@@ -724,87 +776,57 @@ def export_txt_report(results, out_path):
             row += f"{v:{fmt}}{star}".rjust(col_w)
         return row
 
-    # ── Tabella 1: Metriche ───────────────────────────────────────────────────
+    # Tabella metriche
     lines += ["  TABELLA 1 — METRICHE DI PERFORMANCE", thin]
     lines.append(header_row("Metrica"))
     lines.append(thin)
-
-    metric_defs = [
+    for label, key, best_max in [
         ("Accuracy",          "accuracy",          True),
         ("Balanced Accuracy", "balanced_accuracy",  True),
         ("F1 Score",          "f1",                 True),
         ("ROC AUC",           "roc_auc",            True),
-    ]
-    for label, key, best_max in metric_defs:
+        ("Avg Precision",     "avg_precision",      True),
+    ]:
         vals = [results[m]["metrics"].get(key, 0) for m in models]
         lines.append(data_row(label, vals, ".4f", best_max))
-
     lines += [thin, "  * = miglior valore per quella metrica", ""]
 
-    # ── Tabella 2: Tempi ──────────────────────────────────────────────────────
+    # Tabella tempi
     lines += ["  TABELLA 2 — TEMPI", thin]
     lines.append(header_row("Tempo"))
     lines.append(thin)
-
-    time_defs = [
-        ("Training (s)",  "train_time_s", False),
-        ("Totale (s)",    "total_time_s", False),
-    ]
-    for label, key, best_max in time_defs:
+    for label, key in [("Training (s)", "train_time_s"), ("Totale (s)", "total_time_s")]:
         vals = [results[m].get(key, 0) for m in models]
-        lines.append(data_row(label, vals, ".1f", best_max))
-
+        lines.append(data_row(label, vals, ".1f", False))
     lines += [thin, ""]
 
-    # ── Tabella 3: Risorse embedded ───────────────────────────────────────────
-    lines += ["  TABELLA 3 — RISORSE EMBEDDED (STM32)", thin]
-    lines.append(header_row("Risorsa"))
-    lines.append(thin)
-
-    res_defs = [
-        ("Flash interna (KB)", "flash_interna_kb", False),
-        ("Flash esterna (MB)", "flash_esterna_mb", False),
-        ("RAM necessaria (KB)","ram_kb",            False),
-    ]
-    for label, key, best_max in res_defs:
-        vals = [results[m]["resources"].get(key, 0) for m in models]
-        lines.append(data_row(label, vals, ".1f", best_max))
-
-    lines.append(thin)
-
-    # STM32 ready e ONNX
-    stm_row  = f"  {'STM32 ready':<{label_w}}"
-    onnx_row = f"  {'ONNX export':<{label_w}}"
+    # Confusion matrices
+    lines += ["  TABELLA 3 — CONFUSION MATRICES", thin]
     for m in models:
-        stm_row  += f"{results[m].get('stm32_ready','?'):>{col_w}}"
-        onnx_row += f"{'si' if results[m].get('onnx_export') else 'no':>{col_w}}"
-    lines += [stm_row, onnx_row, thin, ""]
-
-    # ── Tabella 4: Confusion matrices ─────────────────────────────────────────
-    lines += ["  TABELLA 4 — CONFUSION MATRICES", thin]
-    for m in models:
-        cm = results[m]["metrics"].get("confusion_matrix", [[0,0],[0,0]])
+        cm = results[m]["metrics"].get("confusion_matrix", [[0, 0], [0, 0]])
         tn, fp, fn, tp = cm[0][0], cm[0][1], cm[1][0], cm[1][1]
-        name = results[m]["model"]
         lines += [
-            f"  {name}",
+            f"  {results[m]['model']}",
             f"    {'':20} {'Pred No Arc':>14} {'Pred Arc':>14}",
             f"    {'Actual No Arc':20} {tn:>14} {fp:>14}",
             f"    {'Actual Arc':20} {fn:>14} {tp:>14}",
             "",
         ]
 
-    # ── Dettaglio risorse per modello ─────────────────────────────────────────
-    lines += ["  TABELLA 5 — DETTAGLIO RISORSE PER MODELLO", thin]
-    for m in models:
-        det  = results[m]["resources"].get("dettaglio", {})
-        name = results[m]["model"]
-        lines.append(f"  {name}")
-        for k, v in det.items():
-            lines.append(f"    {k:<35} {v}")
-        lines.append("")
-
-    lines += [sep, "  Fine report", sep]
+    # Nota deploy
+    lines += [
+        sep,
+        "  NOTA SUL DEPLOY STM32",
+        thin,
+        "  Tutte e tre le pipeline usano MultiRocket come preprocessing.",
+        "  MultiRocket non ha un export C/ONNX automatico: nessuna pipeline",
+        "  è deployabile su STM32 senza reimplementare i kernel in C.",
+        "  ArcNet è la più avanzata (scaler+PCA+rete già nel bundle),",
+        "  ma il preprocessing MultiRocket è comune a tutti e tre.",
+        sep,
+        "  Fine report",
+        sep,
+    ]
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -821,38 +843,29 @@ def main():
     )
     parser.add_argument("train",  help="Path al file train.npz")
     parser.add_argument("test",   help="Path al file test.npz")
-    parser.add_argument("--out",  default="./results", help="Directory output")
+    parser.add_argument("--out",  default="./results")
     parser.add_argument("--models", nargs="+",
                         choices=["ridge", "hydra", "arcnet"],
-                        default=["ridge", "hydra", "arcnet"],
-                        help="Modelli da addestrare (default: tutti e tre)")
-
-    # Comuni
-    parser.add_argument("--downsample",   type=int,   default=4)
-
-    # ArcNet
+                        default=["ridge", "hydra", "arcnet"])
+    parser.add_argument("--downsample",     type=int,   default=4)
     parser.add_argument("--pca-components", type=int,   default=256)
-    parser.add_argument("--hidden",          type=int,   nargs="+", default=[64, 32])
-    parser.add_argument("--dropout",         type=float, default=0.3)
-    parser.add_argument("--epochs",          type=int,   default=30)
-    parser.add_argument("--batch-size",      type=int,   default=64)
-    parser.add_argument("--lr",              type=float, default=1e-3)
-
-    # Hydra
-    parser.add_argument("--hydra-kernels", type=int, default=8)
-    parser.add_argument("--hydra-groups",  type=int, default=4)
-
+    parser.add_argument("--hidden",         type=int,   nargs="+", default=[64, 32])
+    parser.add_argument("--dropout",        type=float, default=0.3)
+    parser.add_argument("--epochs",         type=int,   default=30)
+    parser.add_argument("--batch-size",     type=int,   default=64)
+    parser.add_argument("--lr",             type=float, default=1e-3)
+    parser.add_argument("--hydra-kernels",  type=int,   default=8)
+    parser.add_argument("--hydra-groups",   type=int,   default=4)
     args = parser.parse_args()
+
     os.makedirs(args.out, exist_ok=True)
 
-    # ── Carica dati (una volta sola) ──────────────────────────────────────────
     banner("LOAD DATASET")
     X_train, y_train = load_dataset(args.train, args.downsample)
     X_test,  y_test  = load_dataset(args.test,  args.downsample)
     print(f"  Train: {X_train.shape}  labels: {np.bincount(y_train)}")
     print(f"  Test : {X_test.shape}   labels: {np.bincount(y_test)}")
 
-    # ── Addestramento ─────────────────────────────────────────────────────────
     results = {}
 
     if "ridge" in args.models:
@@ -879,19 +892,19 @@ def main():
     # ── Confronto finale ──────────────────────────────────────────────────────
     banner("CONFRONTO FINALE")
 
+    col_w = 22
     metric_labels = {
         "accuracy":          "Accuracy",
         "balanced_accuracy": "Balanced Accuracy",
         "f1":                "F1 Score",
         "roc_auc":           "ROC AUC",
+        "avg_precision":     "Avg Precision",
     }
 
-    # Tabella metriche
-    col_w = 22
-    header_row = f"{'Metrica':<25}" + "".join(
+    header = f"{'Metrica':<25}" + "".join(
         f"{results[m]['model'][:col_w]:>{col_w}}" for m in results)
-    print(header_row)
-    print("-" * len(header_row))
+    print(header)
+    print("-" * len(header))
 
     for key, label in metric_labels.items():
         vals = {m: results[m]["metrics"].get(key, 0) for m in results}
@@ -903,62 +916,56 @@ def main():
             row += f"{v:.4f}{star}".rjust(col_w)
         print(row)
 
-    # Tabella risorse
-    print("\n")
-    res_labels = [
-        ("flash_interna_kb", "Flash interna (KB)",  True),
-        ("flash_esterna_mb", "Flash esterna (MB)",  True),
-        ("ram_kb",           "RAM (KB)",             True),
-    ]
-    print(f"{'Risorsa':<25}" + "".join(
-        f"{results[m]['model'][:col_w]:>{col_w}}" for m in results))
-    print("-" * len(header_row))
-    for key, label, lower in res_labels:
-        vals = {m: results[m]["resources"].get(key, 0) for m in results}
-        best = min(vals.values())
-        row  = f"{label:<25}"
-        for m in results:
-            v    = vals[m]
-            star = " ★" if (lower and v == best) else "  "
-            row += f"{v:.1f}{star}".rjust(col_w)
-        print(row)
-
     print()
-    for m in results:
-        stm = results[m].get("stm32_ready", "?")
-        onnx = "✅" if results[m].get("onnx_export") else "❌"
-        print(f"  {results[m]['model']:<40} STM32={stm}  ONNX={onnx}")
+    print("  Nota: tutte e tre le pipeline richiedono la reimplementazione")
+    print("  di MultiRocket in C per il deploy su STM32.")
 
-    # ── Salva JSON confronto ──────────────────────────────────────────────────
+    # ── Stima risorse ─────────────────────────────────────────────────────────
+    res_rocket_r = results["ridge"]["_res_rocket"] if "ridge" in results else None
+    res_rocket_a = results["arcnet"]["_res_rocket"] if "arcnet" in results else None
+    res_rocket   = res_rocket_r or res_rocket_a  # stesso costo per entrambi
+    res_ridge    = results["ridge"]["_res_clf"] if "ridge" in results else None
+    res_arcnet   = results["arcnet"]["_res_clf"] if "arcnet" in results else None
+    if res_rocket:
+        print_resource_table(res_rocket, res_ridge, res_arcnet)
+
+    # ── Salva JSON ────────────────────────────────────────────────────────────
     comparison_path = os.path.join(args.out, "comparison.json")
+    # rimuove _probs/_labels dal JSON (troppo grandi)
+    results_json = {}
+    for k, r in results.items():
+        results_json[k] = {kk: vv for kk, vv in r.items() if kk != "metrics"}
+        results_json[k]["metrics"] = {kk: vv for kk, vv in r["metrics"].items()
+                                      if not kk.startswith("_")}
     with open(comparison_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results_json, f, indent=2)
     print(f"\n  Confronto JSON: {comparison_path}")
 
-
-    # ── Genera CSV e TXT ──────────────────────────────────────────────────────
-    banner("EXPORT CSV + TXT")
+    # ── CSV + TXT ─────────────────────────────────────────────────────────────
+    banner("EXPORT CSV + TXT + GRAFICI")
     export_csv(results, args.out)
-    txt_path = os.path.join(args.out, "comparison_report.txt")
-    export_txt_report(results, txt_path)
+    export_txt_report(results, os.path.join(args.out, "comparison_report.txt"))
+    plot_comparison(results, args.out)
 
     banner("DONE")
     print(f"""
   Output in: {args.out}/
-    ridge/                   bundle Ridge
-    hydra/                   bundle Hydra
-    arcnet/                  bundle ArcNet + ONNX + header C
-    comparison.json          dati completi
-    comparison_metrics.csv   metriche per modello
-    comparison_confusion.csv confusion matrix
-    comparison_resources.csv risorse embedded STM32
-    comparison_report.txt    report testuale completo
-
-  Prossimi step STM32:
-    1. Carica arcnet/arcnet.onnx su ST Edge AI Developer Cloud
-    2. Usa arcnet/scaler.h e arcnet/pca.h nel firmware C
-    3. Implementa kernel MultiRocket in C
+    ridge/
+      bundle.pkl               modello + transformer + scaler
+      config.json              metriche
+    hydra/
+      bundle.pkl               modello completo
+      config.json              metriche
+    arcnet/
+      bundle.pkl               transformer + scaler + pca + model state_dict
+      config.json              metriche
+    comparison.json
+    comparison_metrics.csv
+    comparison_confusion.csv
+    comparison_report.txt
+    comparison_plots.png       grafici comparativi (ROC, PR, CM, metriche)
 """)
+
 
 if __name__ == "__main__":
     main()

@@ -15,18 +15,14 @@ Il progetto integra:
 
 # 🧠 Obiettivo del Progetto
 
-L’obiettivo del progetto è sviluppare un sistema di classificazione capace di identificare fault da arco elettrico DC in impianti fotovoltaici, ottimizzando contemporaneamente:
+L'obiettivo è sviluppare un sistema di classificazione capace di identificare fault da arco elettrico DC in impianti fotovoltaici, ottimizzando contemporaneamente:
 
 - accuratezza del modello
 - robustezza rispetto al **data leakage**
 - compatibilità con sistemi embedded
 - inferenza **real-time** su hardware edge
 
-L’intera pipeline è progettata per essere:
-
-- riproducibile
-- scalabile
-- edge-ready
+L'intera pipeline è progettata per essere riproducibile, scalabile ed edge-ready.
 
 ---
 
@@ -35,60 +31,45 @@ L’intera pipeline è progettata per essere:
 ```text
 DC-ARC-Fault/
 │
-├── dataset/                                  # Dataset e preprocessing
-│   ├── dataset/                              # Dataset originale scaricato da Kaggle
-│   ├── dataset_new/                          # Dataset preprocessato finale
-│   │
-│   ├── build_dataset_new.py                  # Sliding window + preprocessing
-│   ├── split_dataset.py                      # Split fisico train/test
-│   └── dataset_leakage_check.py              # Verifica data leakage
+├── dataset/
+│   ├── dataset/                          # Dataset originale da Kaggle
+│   ├── dataset_new/                      # Dataset preprocessato finale
+│   ├── build_dataset_new.py              # Sliding window + preprocessing
+│   ├── split_dataset.py                  # Split fisico train/test
+│   └── dataset_leakage_check.py          # Verifica data leakage
 │
-├── script/
-│   │
-│   ├── training/                             # FASE 1 — Training modelli
-│   │   │
+├── scripts/
+│   ├── training/
 │   │   ├── inception_time/
 │   │   │   ├── results/
-│   │   │   ├── train_inceptiontime.py
-│   │   │   └── *.keras
+│   │   │   └── train_inceptiontime.py    # Training + export ONNX + calibrazione
 │   │   │
 │   │   ├── mcnn/
 │   │   │   ├── results/
-│   │   │   └── train_mcnn.py
+│   │   │   ├── export_mcnn/
+│   │   │   ├── train_mcnn.py             # Training MCNN
+│   │   │   └── export_mcnn.py            # Export ONNX + calibrazione
 │   │   │
 │   │   └── multirockethydra/
+│   │       └── train_arc_compare.py      # Training comparativo Ridge/Hydra/ArcNet
 │   │
-│   ├── onnx/                                 # FASE 2 — Export ONNX
-│   │   │
-│   │   ├── export_mcnn/
-│   │   ├── export_mcnn.py
-│   │   └── export_mr.py
-│   │
-│   └── st_edge/                              # FASE 3 — Edge AI deployment
+│   └── modelli_quantizzati/
+│       ├── inception_time/
+│       │   ├── Confronto_modelli.py
+│       │   └── inceptiontime_PerChannel_quant_calibration_data_npz_1.onnx
 │       │
-│       ├── dataset_calibrazione/             # Dataset per quantizzazione
-│       │   ├── calibration_inceptiontime/
-│       │   ├── dataset_calibrazione_inception.py
-│       │   └── dataset_calibrazione_mrh.py
-│       │
-│       └── modelli_quantizzati/
-│           │
-│           ├── inception/
-│           │   ├── Confronto_modelli.py
-│           │   └── inceptiontime_PerChannel_quant_*.onnx
-│           │
-│           ├── mcnn/
-│           │   ├── Confronto_modelli.py
-│           │   └── hydra_PerChannel_quant_*.onnx
-│           │
-│           └── multirocket/
-│               ├── Confronto_modelli.py
-│               └── *.onnx
+│       └── mcnn/
+│           ├── stm32_float/
+│           ├── stm32_int/
+│           ├── Confronto_modelli.py
+│           ├── mcnn_PerChannel_quant_calibration_mcnn_npz_1.onnx
+│           └── misura_risorse.py
 │
-├── pipeline.png                              # Schema pipeline
-├── requirements.txt                          # Dipendenze
+├── pipeline.png
+├── requirements.txt
 └── README.md
 ```
+
 ---
 
 # ⚙️ Installazione
@@ -100,25 +81,17 @@ git clone <repository-url>
 cd DC-ARC-Fault
 ```
 
----
-
 ## 2️⃣ Creare un ambiente virtuale
 
-### Linux / macOS
-
 ```bash
+# Linux / macOS
 python -m venv venv
 source venv/bin/activate
-```
 
-### Windows
-
-```bash
+# Windows
 python -m venv venv
 venv\Scripts\activate
 ```
-
----
 
 ## 3️⃣ Installare le dipendenze
 
@@ -132,29 +105,15 @@ pip install -r requirements.txt
 
 Il progetto utilizza il dataset pubblico:
 
-## Photovoltaic (PV) DC Arc-Fault Library
+**Photovoltaic (PV) DC Arc-Fault Library**
+[IEEE DataPort](https://ieee-dataport.org/open-access/photovoltaic-pv-dc-arc-library)
 
-[IEEE DataPort – Photovoltaic (PV) DC Arc-Fault Library](https://ieee-dataport.org/open-access/photovoltaic-pv-dc-arc-library)
-
-Dal dataset originale vengono estratti i seguenti segnali elettrici:
-
-- **Corrente (Current)**
-- **Tensione (Voltage)**
-- **Potenza (Power)**
+Dal dataset originale vengono estratti: **Corrente**, **Tensione**, **Potenza**.
 
 È disponibile anche una versione preprocessata su Kaggle:
-
 [Kaggle – DC Arc Fault Dataset](https://www.kaggle.com/datasets/yassirsuarez/dc-arc-fault)
 
-## Download del dataset
-
-Scaricare il dataset da Kaggle e inserirlo nella cartella:
-
-```text
-dataset/dataset/
-```
-
-Struttura attesa:
+Scaricare il dataset e inserirlo in `dataset/dataset/`. Struttura attesa:
 
 ```text
 dataset/
@@ -170,344 +129,218 @@ dataset/
 
 ![Pipeline](pipeline.png)
 
-La pipeline è suddivisa in **sei fasi principali**, dalla preparazione dei dati fino al deployment edge.
-
 ---
 
 # 1️⃣ Preprocessing & Physical Split
 
-In questa fase i segnali grezzi vengono preprocessati tramite:
+I segnali grezzi vengono preprocessati tramite:
 
 - **Sliding Window** per la segmentazione temporale
 - **Normalizzazione** dei segnali
 - **Costruzione di campioni supervisionati**
 
-## Script principali
-
 ```bash
-build_dataset_new.py
-split_dataset.py
+python build_dataset_new.py
+python split_dataset.py
 ```
 
-## Output generato
-
-- **Training Set** → 80%
-- **Test Set** → 20%
-
-Lo split fisico viene eseguito **prima del training** per evitare:
-
-- overlap tra finestre temporali
-- contaminazione tra train e test
-- **temporal data leakage**
-
-Formati di output:
-
-- `.npz` → training
-- `.csv` → analisi/debug
+Lo split fisico (80% train / 20% test) viene eseguito **prima del training** per evitare overlap tra finestre temporali e temporal data leakage. Output: `.npz` per il training, `.csv` per analisi.
 
 ---
 
 # 2️⃣ Data Leakage Verification
 
-In questa fase viene verificata l’assenza di **data leakage** tra training e test set.
-
-Controlli effettuati:
+Verifica dell'assenza di data leakage tra training e test set:
 
 - ricerca di duplicati
 - verifica overlap temporale
 - validazione dello split fisico
 
-## Script principale
-
 ```bash
-dataset_leakage_check.py
+python dataset_leakage_check.py
 ```
 
----
-
-# 3️⃣ Model Training
-
-Addestramento dei modelli di classificazione:
-
-- **InceptionTime**
-- **MCNN**
-- **MultiRocket**
-
-Directory:
-
-```text
-script/training/
-```
-
-Ogni modello salva:
-
-- checkpoint (`.keras`)
-- metriche
-- risultati finali
-
----
-
-# 4️⃣ ONNX Export
-
-Conversione dei modelli in formato **ONNX** per deployment multipiattaforma.
-
-Script disponibili in:
-
-```text
-script/onnx/
-```
-
-Output:
-
-- modelli `.onnx`
-
----
-
-# 5️⃣ INT8 Quantization
-
-Quantizzazione dei modelli tramite dataset di calibrazione per ridurre:
-
-- memoria
-- latenza
-- consumo energetico
-
-Formato finale:
-
-- `*_quant.onnx`
-
----
-
-# 6️⃣ Edge Deployment (STM32)
-
-Benchmark dei modelli quantizzati tramite **ST Edge AI** su hardware embedded STM32.
-
-Metriche valutate:
-
-- tempo di inferenza
-- utilizzo RAM
-- utilizzo Flash
-- accuratezza post-quantizzazione
-
-Directory:
-
-```text
-script/st_edge/
-```
-
----
-
-# 📊 Risultati
-
-Il progetto confronta diversi modelli considerando:
-
-- accuracy
-- latency
-- memory footprint
-- deployability su edge
-
----
-
-# 👨‍💻 Tecnologie Utilizzate
-
-- Python
-- TensorFlow / Keras
-- ONNX
-- NumPy / Pandas
-- Scikit-learn
-- ST Edge AI
-- STM32
-
----
 ---
 
 # 3️⃣ Training & Feature Extraction
 
-La cartella:
+La cartella `scripts/training/` contiene le pipeline di training per tre architetture distinte.
+
+## Modelli utilizzati
+
+| Modello | Tipologia | Deploy STM32 |
+|---|---|---|
+| InceptionTime | Deep Learning (CNN temporale) | ✅ ONNX → ST Edge AI |
+| MCNN | CNN multi-scala | ✅ ONNX → ST Edge AI |
+| MultiRocket + varianti | Feature-based (ML classico) | ⚠️ Solo sperimentale |
+
+---
+
+## 🧠 InceptionTime
+
+`train_inceptiontime.py` gestisce in un unico script:
+
+- training con tsai + PyTorch su GPU
+- metriche UL1699B (detection rate, false positive rate)
+- analisi multi-soglia
+- export `inceptiontime.onnx` (shape dinamica)
+- generazione dataset di calibrazione per quantizzazione INT8
+
+**Output prodotti:**
 
 ```text
-script/training/
+risultati_inception/
+├── inceptiontime.onnx            ← per ST Edge AI
+├── inceptiontime_training.png    ← curve loss/accuracy
+├── results_inceptiontime.png     ← confusion matrix, ROC, PR, score dist.
+├── inceptiontime_report.txt      ← metriche complete
+├── calibration_data.npz          ← calibrazione ST Edge AI (chiave: 'input')
+├── calibration_data.npy          ← alternativo
+├── calibration_data_flat.npy     ← fallback 2D
+├── calibration_labels.npy        ← label per verifica
+└── calibration_info.txt          ← istruzioni per ST Edge AI
 ```
 
-contiene differenti approcci di classificazione.
+```bash
+python train_inceptiontime.py --epochs 50 --out risultati_inception
+python train_inceptiontime.py --epochs 50 --n-cal 200 --out risultati_inception
+```
 
-| Modello | Tipologia |
+---
+
+## 🧠 MCNN
+
+Il training produce un bundle `mcnn_bundle.pkl`. L'export viene eseguito separatamente:
+
+```bash
+python export_mcnn.py mcnn_bundle.pkl arc_dataset_train.npz --out export_mcnn
+```
+
+**Output prodotti:**
+
+```text
+export_mcnn/
+├── mcnn.onnx                 ← feature extractor CNN per ST Edge AI
+├── ridge_weights.h           ← classificatore Ridge in C
+└── calibration_mcnn.npz      ← dataset calibrazione INT8
+```
+
+> **Nota:** viene esportata solo la CNN (feature extraction). Il classificatore Ridge rimane esterno e viene implementato separatamente in C tramite `ridge_weights.h`.
+
+---
+
+## 🚀 MultiRocket + varianti (analisi comparativa)
+
+`train_arc_compare.py` addestra e confronta tre pipeline in un unico run:
+
+| Pipeline | Descrizione |
 |---|---|
-| InceptionTime | Deep Learning |
-| MCNN | CNN Multi-scala |
-| MultiRocket + Hydra | Feature-based |
+| MultiRocket + Ridge | Feature extraction + classificatore lineare |
+| MultiRocketHydra + Ridge | Kernel Hydra + Ridge interno |
+| MultiRocket + PCA + ArcNet | Feature extraction + PCA + rete neurale |
 
-Durante il training vengono eseguiti:
+```bash
+python train_arc_compare.py train.npz test.npz
+python train_arc_compare.py train.npz test.npz --models ridge arcnet
+python train_arc_compare.py train.npz test.npz --pca-components 128 --epochs 40
+```
 
-- controllo anti leakage
-- validazione
-- normalizzazione globale
-- feature extraction
-- salvataggio checkpoint
+**Output prodotti:**
+
+```text
+results/
+├── ridge/
+│   ├── bundle.pkl               modello + transformer + scaler
+│   └── config.json              metriche + risorse stimate
+├── hydra/
+│   ├── bundle.pkl               modello completo
+│   └── config.json              metriche
+├── arcnet/
+│   ├── bundle.pkl               transformer + scaler + pca + model state_dict
+│   └── config.json              metriche + risorse stimate
+├── comparison.json
+├── comparison_metrics.csv
+├── comparison_confusion.csv
+├── comparison_resources.csv     risorse per componente
+├── comparison_report.txt
+└── comparison_plots.png         ROC, PR, confusion matrix, metriche
+```
+
+### ⚠️ Nota sul deploy STM32 — MultiRocket
+
+Tutte e tre le pipeline MultiRocket usano MultiRocket come preprocessing. MultiRocket **non ha un export C/ONNX automatico**: nessuna delle tre pipeline è deployabile su STM32 senza reimplementare manualmente i kernel in C. Sono state usate esclusivamente per analisi comparativa offline.
+
+La stima delle risorse prodotta dallo script separa:
+- **costo preprocessing** (MultiRocket, comune a Ridge e ArcNet — da reimplementare)
+- **costo classificatore finale** (confrontabile tra pipeline, ArcNet verificabile via ONNX)
 
 ---
 
 # 4️⃣ Export ONNX & Quantizzazione
 
-I modelli addestrati vengono esportati in formato:
+Dopo il training, i modelli vengono esportati e quantizzati per il deployment embedded.
 
-```text
-ONNX (FP32)
-```
-
-Script disponibili:
-
-```bash
-python export_mcnn.py
-python export_mrh.py
-```
-
-Dataset di calibrazione:
-
-```bash
-python dataset_calibrazione_inception.py
-python dataset_calibrazione_mrh.py
-```
-
-La quantizzazione viene effettuata in:
-
-- INT8 Per-Channel
-- configurazioni ottimizzate per STM32
+| Modello | Export ONNX | Quantizzazione INT8 |
+|---|---|---|
+| InceptionTime | ✅ automatico nel training | ✅ via ST Edge AI |
+| MCNN | ✅ `export_mcnn.py` | ✅ via ST Edge AI |
+| MultiRocket | ❌ non disponibile | ❌ non applicabile |
 
 ---
 
 # 5️⃣ Deployment su ST Edge AI
 
-I modelli quantizzati vengono validati tramite:
+I modelli ONNX vengono validati tramite ST Edge AI Core / Developer Cloud.
 
-- ST Edge AI Core
-- ST Edge AI Developer Cloud
+Per InceptionTime e MCNN il flusso è:
 
-Configurazioni benchmark:
-
-| Configurazione | Obiettivo |
-|---|---|
-| FP32 | Accuratezza massima |
-| INT8 | Ottimizzazione embedded |
-
-Metriche monitorate:
-
-- RAM usage
-- Flash usage
-- inferenza
-- accuratezza post-quantizzazione
-
-Script benchmark:
-
-```bash
-Confronto_modelli.py
-```
-
----
-
-# 6️⃣ Valutazione Finale
-
-Il test set rimane completamente indipendente dall'intero processo di training e calibrazione.
-
-Vengono confrontati:
-
-- modello FP32
-- modello INT8
-
-Metriche finali:
-
-- Accuracy
-- Precision
-- Recall
-- F1-score
-- impatto quantizzazione
+1. Importa il modello `.onnx` in ST Edge AI
+2. Carica il dataset di calibrazione `.npz` (chiave: `input`)
+3. Seleziona quantizzazione INT8 Per-Channel
+4. Avvia la quantizzazione → genera `model_int8.onnx`
+5. Carica il modello quantizzato nel progetto
+6. Esegui inferenza sul test set e confronta con FP32
 
 ---
 
 # 📊 Risultati
 
-Di seguito sono riportate le accuratezze ottenute dai principali modelli utilizzati nel progetto.
+## Accuratezza FP32 vs INT8
 
 | Modello | FP32 Accuracy | INT8 Accuracy |
 |---|---|---|
-| InceptionTime | 98.62%| 98.97% |
+| InceptionTime | 98.62% | 98.97% |
 | MCNN | 99.60% | 99.09% |
-| MultiRocket + Hydra | -- | -- |
 
+## Confronto MultiRocket (solo offline)
 
----
-
-# 🛠️ Tecnologie Utilizzate
-
-## Machine Learning / Deep Learning
-
-- PyTorch
-- NumPy
-- Scikit-learn
-- ONNX
-- MultiRocket
-- Hydra
-- InceptionTime
-
-## Edge AI
-
-- ST Edge AI
-- STM32
-- Quantizzazione INT8
-- ONNX Runtime
+| Pipeline | Accuracy | Balanced Acc | F1 | ROC-AUC |
+|---|---|---|---|---|
+| MultiRocket + Ridge | 99.54% | 99.52% | 99.63% | 99.93% |
+| MultiRocketHydra + Ridge | **99.65%** | **99.66%** | **99.72%** | 99.66% |
+| MultiRocket + PCA + ArcNet | 99.55% | 99.52% | 99.65% | **99.99%** |
 
 ---
 
-# 🚀 Esempi di Utilizzo
+# 📈 Metriche monitorate
 
-## Costruzione Dataset
+Durante deployment e benchmark:
 
-```bash
-python build_dataset_new.py
-```
-
-## Split Train/Test
-
-```bash
-python split_dataset.py
-```
-
-## Export ONNX
-
-```bash
-python export_mcnn.py
-```
-
-## Training
-
-```bash
-python train_multirocket_fixed.py \
-    dataset_train.npz \
-    dataset_test.npz \
-    --out ./results
-```
-
----
-
-# 🎯 Obiettivi Tecnici
-
-- rilevazione real-time archi DC
-- robustezza contro leakage
-- deployment embedded STM32
-- ottimizzazione memoria/inferenza
-- pipeline riproducibile
-- inferenza edge AI
+- RAM usage
+- Flash usage (interna ed esterna QSPI)
+- latenza di inferenza
+- accuracy post-quantizzazione
 
 ---
 
 # 👥 Team
 
-- Lorenzo Meloccaro — MSc, Università Politecnica delle Marche (UNIVPM)
-- Yassir Flavio Suarez Sanchez — MSc, Università Politecnica delle Marche (UNIVPM)
+- **Lorenzo Meloccaro** — MSc, Università Politecnica delle Marche (UNIVPM)
+- **Yassir Flavio Suarez Sanchez** — MSc, Università Politecnica delle Marche (UNIVPM)
 
 ---
 
 # 📄 Licenza
 
 Il dataset originale appartiene ai rispettivi autori del progetto pubblicato su IEEE DataPort.
-
 Il codice del repository è distribuito secondo la licenza specificata nel progetto.

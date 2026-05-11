@@ -1,2 +1,0 @@
-onnx_flash_kb,ridge_flash_kb,total_flash_kb,total_flash_mb,input_ram_kb,cnn_output_ram_kb,internal_ram_kb,total_ram_kb,n_ridge_params,stm32_flash_ok,stm32_ram_ok
-12.4,2.3,14.7,0.014,3.91,2.25,4.5,10.66,577,True,True

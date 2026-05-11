@@ -1,4 +1,0 @@
-model,accuracy,balanced_accuracy,f1,roc_auc,train_time_s,total_time_s,onnx_export,stm32_ready
-MultiRocket + Ridge,0.9954,0.9952,0.9963,0.9993,163.45,659.62,False,parziale
-MultiRocketHydra + Ridge,0.9965,0.9966,0.9972,0.9966,2620.21,2710.2,False,no
-MultiRocket + PCA + ArcNet,0.9955,0.9952,0.9965,0.9999,47.14,593.52,True,si

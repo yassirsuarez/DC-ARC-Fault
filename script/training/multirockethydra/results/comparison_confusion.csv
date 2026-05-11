@@ -1,4 +1,0 @@
-model,TN,FP,FN,TP
-MultiRocket + Ridge,2626,15,18,4502
-MultiRocketHydra + Ridge,2633,8,17,4503
-MultiRocket + PCA + ArcNet,2625,16,16,4504
