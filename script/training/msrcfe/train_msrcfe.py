@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-train_mcnn.py
+train_msrcfe.py
 =========================
 Multi-scale CNN + Ridge per export STM32:
 
@@ -11,7 +11,7 @@ Multi-scale CNN + Ridge per export STM32:
 ✔ salva modello per analisi/ONNX/edge pipeline
 
 Esempio:
-python train_mcnn.py --train train.npz --test test.npz --out results
+python train_msrcfe.py --train train.npz --test test.npz --out results
 """
 
 import argparse
@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
-# MULTI-SCALE CNN FEATURE EXTRACTOR (MCNN-like)
+# MULTI-SCALE CNN FEATURE EXTRACTOR (msrcfe-like)
 # ─────────────────────────────────────────────
 class MultiScaleCNNFeatureExtractor(nn.Module):
     def __init__(self, n_kernels=32, kernel_sizes=[3, 5, 9], dilations=[1, 2, 4]):
@@ -82,7 +82,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", required=True, help="train npz file")
     parser.add_argument("--test", required=True, help="test npz file")
-    parser.add_argument("--out", default="results_mcnn")
+    parser.add_argument("--out", default="results_msrcfe")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -149,20 +149,20 @@ def main():
         "ridge": clf
     }
 
-    with open(os.path.join(args.out, "mcnn_bundle.pkl"), "wb") as f:
+    with open(os.path.join(args.out, "msrcfe_bundle.pkl"), "wb") as f:
         pickle.dump(model_bundle, f)
 
     torch.save(
         feature_extractor.state_dict(),
-        os.path.join(args.out, "mcnn_extractor.pt")
+        os.path.join(args.out, "msrcfe_extractor.pt")
     )
 
     np.save(os.path.join(args.out, "ridge_coef.npy"), clf.coef_)
     np.save(os.path.join(args.out, "ridge_intercept.npy"), clf.intercept_)
 
     log.info("\nSaved:")
-    log.info("  ✔ mcnn_bundle.pkl")
-    log.info("  ✔ mcnn_extractor.pt")
+    log.info("  ✔ msrcfe_bundle.pkl")
+    log.info("  ✔ msrcfe_extractor.pt")
     log.info("  ✔ ridge_coef.npy")
     log.info("  ✔ ridge_intercept.npy")
 

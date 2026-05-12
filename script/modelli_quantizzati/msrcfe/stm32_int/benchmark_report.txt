@@ -2,7 +2,7 @@
   BENCHMARK CNN + RIDGE — REPORT
 ================================================================
 
-  Modello ONNX : C:\Users\Asus\Desktop\progetto_manutenzione\script\training\mcnn\export_mcnn\mcnn.onnx
+  Modello ONNX : C:\Users\Asus\Desktop\progetto_manutenzione\script\modelli_quantizzati\msrcfe\msrcfe_PerChannel_quant_calibration_msrcfe_npz_1.onnx
   Input shape  : [1, 1, 1000]
   Warmup runs  : 10
   Bench runs   : 200
@@ -12,19 +12,19 @@
 ----------------------------------------------------------------
   Stage                    mean       std       min       max       p95
 ----------------------------------------------------------------
-  CNN (ONNX)         mean=  0.180ms  std= 0.018  min= 0.155  max= 0.295  p95= 0.214
-  Ridge (C sim)      mean=  0.003ms  std= 0.001  min= 0.003  max= 0.014  p95= 0.003
-  Pipeline tot.      mean=  0.184ms  std= 0.015  min= 0.161  max= 0.270  p95= 0.205
+  CNN (ONNX)         mean=  0.684ms  std= 0.104  min= 0.555  max= 1.349  p95= 0.818
+  Ridge (C sim)      mean=  0.006ms  std= 0.009  min= 0.005  max= 0.140  p95= 0.005
+  Pipeline tot.      mean=  0.643ms  std= 0.084  min= 0.566  max= 1.211  p95= 0.745
 ----------------------------------------------------------------
-  RAM delta inferenza : 0.000 MB
+  RAM delta inferenza : 0.001 MB
 
 ----------------------------------------------------------------
   TABELLA 2 — STIMA RISORSE EMBEDDED STM32
 ----------------------------------------------------------------
   Flash
-    ONNX model          :     12.4 KB
+    ONNX model          :     32.4 KB
     Ridge pesi          :      2.3 KB
-    Totale Flash        :     14.7 KB  (0.014 MB)
+    Totale Flash        :     34.7 KB  (0.034 MB)
 
   RAM (runtime)
     Input tensor        :     3.91 KB
@@ -39,9 +39,9 @@
 ----------------------------------------------------------------
   TABELLA 3 — THROUGHPUT STIMATO
 ----------------------------------------------------------------
-  Throughput (mean) :   5446.1 inf/s
-  Throughput (p95)  :   4880.0 inf/s
-  Latenza budget    : 0.184 ms/inf  →  adeguato per 50 Hz
+  Throughput (mean) :   1555.0 inf/s
+  Throughput (p95)  :   1342.3 inf/s
+  Latenza budget    : 0.643 ms/inf  →  adeguato per 50 Hz
 
 ================================================================
   Fine report

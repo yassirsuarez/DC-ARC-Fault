@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-export_mcnn.py
+export_msrcfe.py
 ====================
-Export SOLO modello MCNN per STM32H7
+Export SOLO modello MSRCFE per STM32H7
 ✔ Fix dim=2 (no Squeeze bug)
 ✔ Opset 13 (ST Edge AI compatibile)  
 ✔ Verifica numerica PyTorch vs ONNX
 ✔ Shape statica per STM32 (batch=1)
 
 esempio uso:
-$ python export_mcnn.py mcnn_bundle.pkl arc_dataset_train.npz --out export_mcnn
+python export_msrcfe.py msrcfe_bundle.pkl arc_dataset_train.npz --out export_msrcfe
 """
 
 import os
@@ -25,9 +25,9 @@ log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
-# MCNN ARCH
+# MSRCFE ARCH
 # ─────────────────────────────────────────────
-class MCNNFeatureExtractor(nn.Module):
+class MSRCFEFeatureExtractor(nn.Module):
     def __init__(self, n_kernels=32, kernel_sizes=[3, 5, 9], dilations=[1, 2, 4]):
         super().__init__()
         self.convs = nn.ModuleList()
@@ -60,26 +60,26 @@ class MCNNFeatureExtractor(nn.Module):
 
 
 # ─────────────────────────────────────────────
-class MCNNONNXWrapper(torch.nn.Module):
-    def __init__(self, mcnn):
+class MSRCFEONNXWrapper(torch.nn.Module):
+    def __init__(self, msrcfe):
         super().__init__()
-        self.mcnn = mcnn
+        self.msrcfe = msrcfe
 
     def forward(self, x):
-        return self.mcnn.forward_no_unsqueeze(x)
+        return self.msrcfe.forward_no_unsqueeze(x)
 
 
 # ─────────────────────────────────────────────
-def export_mcnn_onnx(mcnn, n_tp, out_dir):
+def export_msrcfe_onnx(msrcfe, n_tp, out_dir):
     import onnx
     import onnxruntime as ort
 
-    mcnn.eval()
-    wrapper = MCNNONNXWrapper(mcnn)
+    msrcfe.eval()
+    wrapper = MSRCFEONNXWrapper(msrcfe)
     wrapper.eval()
 
     dummy = torch.zeros(1, 1, n_tp)
-    path  = os.path.join(out_dir, "mcnn.onnx")
+    path  = os.path.join(out_dir, "msrcfe.onnx")
 
     # ── EXPORT con shape statica (batch=1 fisso per STM32) ──
     torch.onnx.export(
@@ -132,7 +132,7 @@ def export_mcnn_onnx(mcnn, n_tp, out_dir):
     log.info(f"\n── Info ONNX ──")
     log.info(f"  Input:   {sess.get_inputs()[0].name}  {sess.get_inputs()[0].shape}")
     log.info(f"  Output:  {sess.get_outputs()[0].name} {sess.get_outputs()[0].shape}")
-    log.info(f"✔ MCNN ONNX salvato: {path}")
+    log.info(f"✔ MSRCFE ONNX salvato: {path}")
 
     return sess.get_outputs()[0].shape[-1]  # restituisce n_features
 
@@ -181,7 +181,7 @@ def export_calibration_dataset(dataset_path, n_tp, out_dir, n_per_class=200):
     X_cal = X[idx]                                    # (N, 1000)
     X_4d  = X_cal[:, np.newaxis, np.newaxis, :]       # (N, 1, 1, 1000) ← FIX ST Edge AI
 
-    path = os.path.join(out_dir, "calibration_mcnn.npz")
+    path = os.path.join(out_dir, "calibration_msrcfe.npz")
     np.savez(path, input=X_4d)
 
     log.info(f"✔ Calibration dataset: {path}")
@@ -191,9 +191,9 @@ def export_calibration_dataset(dataset_path, n_tp, out_dir, n_per_class=200):
 # ─────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("model",   help="mcnn_bundle.pkl")
+    parser.add_argument("model",   help="msrcfe_bundle.pkl")
     parser.add_argument("dataset", help="arc_dataset_train.npz")
-    parser.add_argument("--out",   default="export_mcnn")
+    parser.add_argument("--out",   default="export_msrcfe")
     parser.add_argument("--n-cal", type=int, default=200,
                         help="Campioni per classe nel dataset di calibrazione")
     args = parser.parse_args()
@@ -213,14 +213,14 @@ def main():
     n_tp = X.shape[-1]
     log.info(f"Dataset: {X.shape}  →  n_tp={n_tp}")
 
-    # ── LOAD MCNN + RIDGE ──
-    mcnn = MCNNFeatureExtractor()
-    mcnn.load_state_dict(model["feature_extractor_state_dict"])
+    # ── LOAD MSRCFE + RIDGE ──
+    msrcfe = MSRCFEFeatureExtractor()
+    msrcfe.load_state_dict(model["feature_extractor_state_dict"])
     clf = model["ridge"]
 
     # ── EXPORT ──
-    log.info("\n── Export MCNN ONNX ──")
-    n_features = export_mcnn_onnx(mcnn, n_tp, args.out)
+    log.info("\n── Export MSRCFE ONNX ──")
+    n_features = export_msrcfe_onnx(msrcfe, n_tp, args.out)
 
     log.info("\n── Export Ridge Header ──")
     export_ridge_header(clf, args.out)
@@ -228,18 +228,18 @@ def main():
     log.info("\n── Calibration Dataset ──")
     export_calibration_dataset(args.dataset, n_tp, args.out, args.n_cal)
 
-    # ── SANITY CHECK: n_features del Ridge deve matchare MCNN ──
+    # ── SANITY CHECK: n_features del Ridge deve matchare MSRCFE ──
     ridge_n = clf.coef_.shape[-1]
     if n_features != ridge_n:
-        log.error(f"✘ MISMATCH: MCNN produce {n_features} features, Ridge si aspetta {ridge_n}!")
+        log.error(f"✘ MISMATCH: MSRCFE produce {n_features} features, Ridge si aspetta {ridge_n}!")
     else:
-        log.info(f"\n✔ Feature match: MCNN={n_features} == Ridge={ridge_n}")
+        log.info(f"\n✔ Feature match: MSRCFE={n_features} == Ridge={ridge_n}")
 
     log.info("\n✔ EXPORT COMPLETATO")
     log.info(f"  Output: {args.out}/")
-    log.info(f"    mcnn.onnx")
+    log.info(f"    msrcfe.onnx")
     log.info(f"    ridge_weights.h")
-    log.info(f"    calibration_mcnn.npz")
+    log.info(f"    calibration_msrcfe.npz")
 
 
 if __name__ == "__main__":

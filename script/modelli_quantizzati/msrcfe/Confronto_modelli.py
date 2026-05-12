@@ -5,10 +5,10 @@ from sklearn.linear_model import RidgeClassifier
 from tqdm import tqdm
 
 # --- CONFIGURAZIONE PERCORSI ---
-PATH_ORIGINALE   = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\mcnn\export_mcnn\mcnn.onnx"
-PATH_QUANTIZZATO = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\modelli_quantizzati\mcnn\mcnn_PerChannel_quant_calibration_mcnn_npz_1.onnx"   # ← scaricato da ST Edge AI
+PATH_ORIGINALE   = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\msrcfe\export_msrcfe\msrcfe.onnx"
+PATH_QUANTIZZATO = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\modelli_quantizzati\msrcfe\msrcfe_PerChannel_quant_calibration_msrcfe_npz_1.onnx"   # ← scaricato da ST Edge AI
 PATH_DATASET     = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz"
-PATH_BUNDLE      = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\mcnn\results\mcnn_bundle.pkl"
+PATH_BUNDLE      = r"C:\Users\Asus\Desktop\progetto_manutenzione\script\training\msrcfe\results\msrcfe_bundle.pkl"
 
 
 def predici(sess, ridge, sample_1d):
