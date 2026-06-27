@@ -83,7 +83,7 @@ DC-ARC-Fault/
 ## 1️⃣ Clonare il repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/yassirsuarez/DC-ARC-Fault.git
 cd DC-ARC-Fault
 ```
 
