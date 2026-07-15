@@ -376,25 +376,29 @@ La latenza FP32 elevata (6.25 s) è attesa su questa board: InceptionTime è una
 ---
 
 ## ⚡ Benchmark STM32 — MS-RCFE + Ridge
-
-Testato su **STM32H7S78-DK** (Cortex-M7), confrontando la pipeline completa (feature extractor + Ridge) in FP32 vs INT8.
-
+ 
+Testato su **STM32H7S78-DK** (Cortex-M7), confrontando la pipeline completa (feature extractor + Ridge) in FP32 vs INT8. Questi valori sono misurati **direttamente sulla board reale** tramite ST Edge AI Developer Cloud.
+ 
 | Metrica | FP32 | INT8 | Δ |
 |---|---|---|---|
 | Inference time | 84.75 ms | 70.04 ms | ↓ ~1.2× |
 | Throughput | 11.80 inf/s | 14.28 inf/s | ↑ ~1.2× |
 | RAM totale | 135.61 KB | 141.11 KB | +4% |
 | Flash totale | 23.56 KB | 30.81 KB | +30% |
-
-**Dettaglio per componente:**
-
-| Componente | FP32 | INT8 |
+ 
+**Stima preliminare del peso relativo dei componenti (benchmark su CPU host, non sulla board):**
+ 
+Prima del deployment è stato eseguito un benchmark preliminare in locale, simulando l'inferenza con `onnxruntime` sulla CPU del PC di sviluppo (script `misura_risorse.py`), per stimare il peso relativo di CNN e Ridge all'interno della pipeline:
+ 
+| Componente (CPU host, onnxruntime) | FP32 | INT8 |
 |---|---|---|
 | Feature extractor (ONNX) | 0.333 ms | 0.684 ms |
-| Ridge Classifier (C) | 0.006 ms | 0.006 ms |
-
-La latenza è dominata dal feature extractor; il Ridge è computazionalmente trascurabile. Entrambe le configurazioni sono ampiamente sopra i requisiti real-time a 50 Hz. La quantizzazione INT8 su modelli piccoli non garantisce sempre un miglioramento della latenza — su questo modello introduce un lieve overhead sulla CNN ma riduce il consumo globale di memoria.
-
+| Ridge Classifier (C, simulato) | 0.006 ms | 0.006 ms |
+ 
+> **Attenzione:** questi valori **non sono confrontabili né sommabili** con la latenza end-to-end misurata sulla board (84.75/70.04 ms): sono due esperimenti su due piattaforme di calcolo diverse. La CPU del PC host è centinaia di volte più potente del Cortex-M7 embedded (multi-GHz, multi-core, cache ampie, contro un microcontrollore a poche centinaia di MHz), il che spiega interamente il divario (~250× in FP32, ~100× in INT8) — non si tratta di un errore nei dati. Il benchmark su CPU ha comunque confermato, in proporzione, che il Ridge Classifier è computazionalmente trascurabile rispetto al feature extractor. **Una vera scomposizione per componente misurata sulla board reale non è al momento disponibile**; se recuperabile dal progetto ST Edge AI Developer Cloud (report con voci tipo "cTime"/"Inference time per layer"), andrebbe aggiunta qui.
+ 
+Entrambe le configurazioni testate su hardware reale sono ampiamente sopra i requisiti real-time a 50 Hz. La quantizzazione INT8 su modelli piccoli non garantisce sempre un miglioramento della latenza — su questo modello introduce un lieve overhead sulla CNN ma riduce il consumo globale di memoria.
+ 
 > **Nota sui valori di memoria:** i valori di Flash e RAM in tabella sono misurati da ST Edge AI su hardware reale e includono il runtime della libreria (~9 KB di overhead). La stima analitica dei soli pesi del modello (feature extractor + Ridge) è **14.7 KB Flash · 10.7 KB RAM** — il delta rispetto ai valori misurati è interamente dovuto a questo overhead.
 
 ---
