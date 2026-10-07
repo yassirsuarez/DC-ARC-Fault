@@ -163,6 +163,26 @@ def conv_macs(model, inits, producers):
     return total
 
 
+def activation_conversions(model, inits):
+    """Elementi che attraversano Q/DQ sulle ATTIVAZIONI (pesi esclusi: si convertono a compile time).
+    Restituisce {'QuantizeLinear': (nodi, elementi), 'DequantizeLinear': (nodi, elementi)} oppure None."""
+    try:
+        inferred = shape_inference.infer_shapes(model)
+    except Exception:
+        return None
+    vi = {v.name: v for v in list(inferred.graph.value_info) + list(inferred.graph.input) + list(inferred.graph.output)}
+    out = {op: [0, 0] for op in Q_OPS}
+    for n in model.graph.node:
+        if n.op_type in Q_OPS and n.input[0] not in inits:
+            v = vi.get(n.input[0])
+            e = numel(shape_of(v)) if v is not None else None
+            if e is None:
+                return None
+            out[n.op_type][0] += 1
+            out[n.op_type][1] += e
+    return {k: tuple(v) for k, v in out.items()}
+
+
 def cmd_inspect(args):
     model = onnx.load(args.model)
     inits = initializers(model)
@@ -192,13 +212,29 @@ def cmd_inspect(args):
     n_in = sum(numel(shape_of(vi)) or 0 for vi, _ in in_q)
     n_out = sum(numel(shape_of(vi)) or 0 for vi, _ in out_dq)
     cyc = n_in * args.cycles_q + n_out * args.cycles_dq
-    print("\nStima analitica del costo di conversione ai bordi (NON e' una misura):")
+    print("\nStima analitica del costo di conversione AI BORDI (NON e' una misura):")
     print(f"  elementi quantizzati in ingresso : {n_in}")
     print(f"  elementi dequantizzati in uscita : {n_out}")
     print(f"  ipotesi: {args.cycles_q:g} cicli/elem (Q), {args.cycles_dq:g} cicli/elem (DQ)")
     print(f"  cicli stimati                    : {cyc:,.0f}  ->  {cyc / args.mhz:,.1f} us a {args.mhz:g} MHz")
     if args.total_ms:
         print(f"  incidenza sul tempo totale       : {100 * (cyc / args.mhz / 1000) / args.total_ms:.3f}% di {args.total_ms} ms")
+
+    act = activation_conversions(model, inits)
+    if act:
+        n_int_q, n_int_dq = act["QuantizeLinear"][1], act["DequantizeLinear"][1]
+        cyc_int = n_int_q * args.cycles_q + n_int_dq * args.cycles_dq
+        print("\nConversioni su TUTTE le attivazioni del grafo (bordi + interne), stima analitica:")
+        print(f"  Quantize   : {act['QuantizeLinear'][0]} nodi, {n_int_q:,} elementi per inferenza")
+        print(f"  Dequantize : {act['DequantizeLinear'][0]} nodi, {n_int_dq:,} elementi per inferenza")
+        print(f"  cicli stimati: {cyc_int:,.0f}  ->  {cyc_int / args.mhz / 1000:,.2f} ms a {args.mhz:g} MHz")
+        if args.cycles:
+            print(f"  incidenza sui cicli misurati: {100 * cyc_int / args.cycles:.1f}%")
+        if n_int_q + n_int_dq > 10 * max(n_in + n_out, 1):
+            print("  ATTENZIONE: quasi tutte le conversioni sono INTERNE (non ai bordi).")
+            print("  Togliere solo Q/DQ ai bordi ('strip-io') ne rimuove una frazione trascurabile.")
+        print("  Se il compilatore fonde Q/DQ con gli operatori vicini il costo reale e' minore:")
+        print("  solo il report per strato lo dice.")
 
     macs = conv_macs(model, inits, producers)
     if macs:
@@ -288,6 +324,8 @@ def cmd_strip_io(args):
         worst = max(worst, float(np.abs(ref - y1f).max()))
     print(f"\nVerifica numerica: differenza massima originale vs variante = {worst:.3e}")
     print("  (attesa ~0: i due modelli eseguono lo stesso calcolo interno)")
+    print("\nATTENZIONE: strip-io rimuove SOLO la conversione ai bordi. Le conversioni interne al grafo")
+    print("(es. Dequantize prima di ReduceMax/ReduceMean) restano: usa 'inspect' per contarle.")
     print("\nPassi successivi:")
     print("  1. Carica ENTRAMBI i modelli (originale e variante) su ST Edge AI Developer Cloud,")
     print("     scegliendo la stessa scheda, e lancia il benchmark.")
