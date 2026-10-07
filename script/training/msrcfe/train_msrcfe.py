@@ -12,6 +12,15 @@ Multi-scale CNN + Ridge per export STM32:
 
 Esempio:
 python train_msrcfe.py --train train.npz --test test.npz --out results
+
+NOTE (v2, 2026-10-07)
+  - I pesi dei kernel convoluzionali sono casuali e NON addestrati. Per
+    impostazione predefinita nessun seed e' impostato (come nei run
+    originali): rieseguire lo script produce kernel diversi. Il modello
+    pubblicato e' quello in results/msrcfe_bundle.pkl. --seed lo rende
+    riproducibile.
+  - Il test set e' usato solo per la valutazione finale; non esiste un
+    validation set per scegliere iperparametri (n_kernels=32, alpha=1.0).
 """
 
 import argparse
@@ -83,9 +92,18 @@ def main():
     parser.add_argument("--train", required=True, help="train npz file")
     parser.add_argument("--test", required=True, help="test npz file")
     parser.add_argument("--out", default="results_msrcfe")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed per riproducibilita' dei kernel casuali (default: nessun seed)")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+
+    if args.seed is not None:
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        log.info("Seed impostato: %d", args.seed)
+    else:
+        log.warning("Nessun seed impostato: i kernel casuali non sono riproducibili (usare --seed)")
 
     # ── LOAD DATASET ──
     train = np.load(args.train)

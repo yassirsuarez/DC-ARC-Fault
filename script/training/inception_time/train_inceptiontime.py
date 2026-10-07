@@ -3,7 +3,8 @@
 train_inceptiontime.py
 ======================
 Addestra InceptionTime su dataset arc fault detection e produce:
-  - metriche UL1699B
+  - metriche di sicurezza (DR, FPR) con il criterio adottato nel lavoro
+    (DR >= 95%, FPR <= 5%; NON sono valori prescritti da UL 1699B)
   - grafici
   - export ONNX (dinamico + statico)
   - dataset di calibrazione per quantizzazione INT8 (ST Edge AI)
@@ -33,6 +34,18 @@ Uso:
 
 Requisiti:
     pip install tsai torch scikit-learn matplotlib seaborn onnxruntime
+
+NOTE METODOLOGICHE (v2, 2026-10-07)
+  - Il test set e' passato a tsai come "valid" (splits = train, test): le
+    metriche per epoca sono calcolate sul test set, ma nessuna callback
+    seleziona l'epoca (si esporta il modello dell'ultima epoca).
+    NON esiste un validation set indipendente da usare per soglia e
+    iperparametri.
+  - La soglia di decisione delle metriche riportate e' 0.5, fissata a priori.
+    L'analisi multi-soglia (threshold_sensitivity) e' DESCRITTIVA: la soglia
+    che indica e' scelta sul test set e non va usata come soglia del modello.
+  - Per impostazione predefinita nessun seed e' impostato: l'inizializzazione
+    dei pesi non e' riproducibile. --seed lo rende riproducibile.
 """
 
 import argparse
@@ -71,14 +84,17 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── path dataset ──────────────────────────────────────────────────────────────
-DATASET_TRAIN = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_train.npz"
-DATASET_TEST  = r"C:\Users\Asus\Desktop\progetto_manutenzione\dataset\dataset_new\arc_dataset_test.npz"
+# relativi alla radice del repository (questo file: script/training/inception_time/)
+REPO_ROOT     = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+DATASET_TRAIN = os.path.join(REPO_ROOT, "dataset", "dataset_new", "arc_dataset_train.npz")
+DATASET_TEST  = os.path.join(REPO_ROOT, "dataset", "dataset_new", "arc_dataset_test.npz")
 
 # ── costanti ──────────────────────────────────────────────────────────────────
 FS_HZ      = 10_000
 RAND       = 42
 BATCH_SIZE = 64
 
+# Criterio adottato in questo lavoro (non sono valori prescritti da UL 1699B)
 UL_MIN_DET = 95.0
 UL_MAX_FP  = 5.0
 N_CAL_DEFAULT = 100   # campioni per classe nel dataset di calibrazione
@@ -88,8 +104,8 @@ N_CAL_DEFAULT = 100   # campioni per classe nel dataset di calibrazione
 # Utility — metriche
 # ══════════════════════════════════════════════════════════════════════════════
 
-def ul1699b_metric(y_test: np.ndarray, y_pred: np.ndarray) -> dict:
-    """Calcola e stampa le metriche UL1699B."""
+def dr_fpr_metric(y_test: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Calcola e stampa DR e FPR (soglia 0.5) e il criterio adottato (DR>=95%, FPR<=5%)."""
     arc    = y_test == 1
     no_arc = y_test == 0
     det    = int(((y_pred == 1) & arc).sum())
@@ -100,28 +116,35 @@ def ul1699b_metric(y_test: np.ndarray, y_pred: np.ndarray) -> dict:
     fp_r   = 100.0 * fp  / max(int(no_arc.sum()), 1)
     ok     = det_r >= UL_MIN_DET and fp_r <= UL_MAX_FP
 
-    log.info("  --- UL1699B (soglia 0.5) ---")
+    log.info("  --- DR / FPR (soglia 0.5, fissata a priori) ---")
     log.info("  Archi:       %d  → rilevati %d (%.1f%%), mancati %d",
              int(arc.sum()), det, det_r, miss)
     log.info("  Senza arco:  %d  → FP %d (%.1f%%), TN %d",
              int(no_arc.sum()), fp, fp_r, tn)
-    log.info("  Esito:       %s", "CONFORME" if ok else "NON conforme")
+    log.info("  Criterio adottato (DR>=95%%, FPR<=5%%): %s", "soddisfatto" if ok else "NON soddisfatto")
 
     return {
         "detected": det, "missed": miss,
         "false_positives": fp, "true_negatives": tn,
         "detection_rate_pct":      round(det_r, 2),
         "false_positive_rate_pct": round(fp_r, 2),
-        "ul1699b_conforme":        ok,
+        "criterio_dr95_fpr5_soddisfatto": ok,
     }
 
 
-def threshold_analysis(y_test: np.ndarray, y_proba: np.ndarray) -> float:
-    """Analisi multi-soglia, restituisce la soglia ottimale."""
-    log.info("  --- Analisi soglie ---")
+def threshold_sensitivity(y_test: np.ndarray, y_proba: np.ndarray) -> float:
+    """
+    Analisi DESCRITTIVA multi-soglia (griglia 0.10-0.50) sul test set.
+
+    Restituisce la soglia con DR massimo che soddisfa il criterio adottato.
+    Attenzione: e' scelta sul test set e, con questa griglia, tende sempre
+    alla soglia piu' bassa; NON e' una soglia ottimale ne' validata e non va
+    usata per il modello. Le metriche di riferimento sono quelle a soglia 0.5.
+    """
+    log.info("  --- Analisi soglie (descrittiva, sul test set) ---")
     log.info("  %s  %s  %s  %s",
              "Soglia".rjust(8), "Det%".rjust(7),
-             "FP%".rjust(6), "UL1699B".rjust(9))
+             "FP%".rjust(6), "Criterio".rjust(9))
     best_thr = 0.5
     best_det = 0.0
     for thr in np.arange(0.10, 0.55, 0.05):
@@ -135,7 +158,7 @@ def threshold_analysis(y_test: np.ndarray, y_proba: np.ndarray) -> float:
         if d >= UL_MIN_DET and f <= UL_MAX_FP and d > best_det:
             best_det = d
             best_thr = float(thr)
-    log.info("  Soglia ottimale: %.2f", best_thr)
+    log.info("  Soglia con DR massimo che soddisfa il criterio (descrittiva, NON validata): %.2f", best_thr)
     return best_thr
 
 
@@ -460,7 +483,7 @@ def plot_training_history(history: dict, out_dir: str):
     ax = axes[1]
     if history["val_acc"]:
         ax.plot(history["val_acc"], label="Val acc", color="tomato", ls="--")
-    ax.axhline(0.95, color="red", ls=":", lw=1, label="95% UL1699B")
+    ax.axhline(0.95, color="red", ls=":", lw=1, label="95% (criterio adottato)")
     ax.set_title("Accuracy"); ax.set_xlabel("Epoch")
     ax.legend(); ax.grid(alpha=0.3)
 
@@ -530,7 +553,7 @@ def plot_results(y_test, y_pred, y_proba, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Training InceptionTime (tsai/PyTorch) con metriche UL1699B",
+        description="Training InceptionTime (tsai/PyTorch) con metriche DR/FPR",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--train", default=DATASET_TRAIN,
@@ -543,6 +566,8 @@ def main():
                         help="Epoche di training (default: 50)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
                         help=f"Batch size GPU (default: {BATCH_SIZE})")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed per riproducibilita' (default: nessun seed, come nei run originali)")
     parser.add_argument("--n-cal", type=int, default=N_CAL_DEFAULT,
                         help=f"Campioni per classe nel dataset di calibrazione "
                              f"(default: {N_CAL_DEFAULT})")
@@ -554,6 +579,17 @@ def main():
             sys.exit(1)
 
     os.makedirs(args.out, exist_ok=True)
+
+    if args.seed is not None:
+        import random
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        log.info("Seed impostato: %d", args.seed)
+    else:
+        log.warning("Nessun seed impostato: l'inizializzazione dei pesi non e' riproducibile (usare --seed)")
+    log.info("NOTA: il test set e' usato come 'valid' in tsai (nessuna selezione dell'epoca; nessun validation set).")
 
     # ── GPU check ─────────────────────────────────────────────────────────────
     if torch.cuda.is_available():
@@ -632,8 +668,8 @@ def main():
     if auc: log.info("  ROC-AUC:           %.4f", auc)
     if ap:  log.info("  Avg Precision:     %.4f", ap)
 
-    ul      = ul1699b_metric(y_test, y_pred)
-    best_th = threshold_analysis(y_test, y_proba) if y_proba is not None else 0.5
+    ul      = dr_fpr_metric(y_test, y_pred)
+    thr_descr = threshold_sensitivity(y_test, y_proba) if y_proba is not None else 0.5
 
     # ── grafici ───────────────────────────────────────────────────────────────
     plot_training_history(history, args.out)
@@ -664,14 +700,15 @@ def main():
         "f1_arc":                  round(f1,  4),
         "roc_auc":                 round(auc, 4) if auc else None,
         "avg_precision":           round(ap,  4) if ap  else None,
-        "best_threshold":          round(best_th, 2),
+        "soglia_descrittiva_su_test": round(thr_descr, 2),   # NON validata; soglia delle metriche: 0.5
         **ul,
     }
 
     report_path = os.path.join(args.out, "inceptiontime_report.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("TRAINING REPORT — InceptionTime (tsai + PyTorch)\n")
-        f.write("Normativa di riferimento: UL 1699B\n")
+        f.write("Riferimento: UL 1699B (DR>=95% e FPR<=5% sono un criterio adottato nel lavoro, non prescritto dallo standard)\n")
+        f.write("Soglia delle metriche: 0.5 (fissata a priori). Il test set funge da 'valid' in tsai; nessun validation set indipendente.\n")
         f.write("=" * 60 + "\n\n")
         f.write(f"Dataset train: {args.train}\n")
         f.write(f"Dataset test:  {args.test}\n")

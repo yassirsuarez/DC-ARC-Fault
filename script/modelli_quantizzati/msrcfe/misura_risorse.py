@@ -16,12 +16,24 @@ Output:
     benchmark_resources.csv   stima risorse embedded STM32
     benchmark_report.txt      report testuale leggibile
 
+NOTE (v2, 2026-10-07)
+    - Si tratta di un benchmark su CPU HOST (onnxruntime): i tempi NON sono
+      confrontabili con le misure su board (STM32) ne' sommabili ad esse.
+    - CNN, Ridge e pipeline sono cronometrati NELLA STESSA ESECUZIONE
+      (cnn + ridge = pipeline per ogni iterazione). Nella v1 le tre misure erano
+      separate e "Pipeline tot." poteva risultare inferiore alla sola CNN.
+    - I limiti di Flash/RAM del target non sono piu' scritti nel codice
+      (la v1 usava 2 MB / 512 KB, valori non verificati per la STM32H7S78):
+      si passano con --flash-limit-kb / --ram-limit-kb; senza limiti nessuna
+      verifica di compatibilita' viene eseguita.
+    - Il nome dell'ingresso del modello e' letto dal modello stesso.
+
 USO:
     python misura_risorse.py \
         --model  path/to/model.onnx \
         --coef   path/to/ridge_coef.npy \
         --bias   path/to/ridge_intercept.npy \
-        --out    ./stm32
+        --out    ./host_float
 """
 
 import argparse
@@ -95,7 +107,8 @@ def measure_ram_delta(fn, samples=10):
 # STIMA RISORSE EMBEDDED STM32
 # =============================================================================
 
-def estimate_stm32_resources(sess, ridge_weights, ridge_bias, input_shape):
+def estimate_stm32_resources(sess, ridge_weights, ridge_bias, input_shape,
+                             model_path=None, flash_limit_kb=None, ram_limit_kb=None):
     """
     Stima Flash e RAM necessarie per eseguire la pipeline su STM32.
 
@@ -113,7 +126,7 @@ def estimate_stm32_resources(sess, ridge_weights, ridge_bias, input_shape):
     o ottimizzazioni ST Edge AI.
     """
     # ── Flash ─────────────────────────────────────────────────────────────────
-    onnx_path   = sess._model_path if hasattr(sess, "_model_path") else None
+    onnx_path   = model_path
     onnx_flash_kb = os.path.getsize(onnx_path) / 1024 if onnx_path and os.path.exists(onnx_path) else 0.0
 
     n_ridge_params  = ridge_weights.size + ridge_bias.size
@@ -147,8 +160,11 @@ def estimate_stm32_resources(sess, ridge_weights, ridge_bias, input_shape):
         "internal_ram_kb":   round(internal_ram_kb,  2),
         "total_ram_kb":      round(total_ram_kb,     2),
         "n_ridge_params":    n_ridge_params,
-        "stm32_flash_ok":    total_flash_kb < 2048,     # <2 MB → Flash interna H7
-        "stm32_ram_ok":      total_ram_kb   < 512,      # <512 KB → RAM tipica H7
+        # Verifica di compatibilita' SOLO se i limiti del target sono dichiarati
+        "flash_limit_kb":    flash_limit_kb,
+        "ram_limit_kb":      ram_limit_kb,
+        "flash_entro_limite": (None if flash_limit_kb is None else total_flash_kb < flash_limit_kb),
+        "ram_entro_limite":   (None if ram_limit_kb is None else total_ram_kb < ram_limit_kb),
     }
 
 
@@ -156,45 +172,54 @@ def estimate_stm32_resources(sess, ridge_weights, ridge_bias, input_shape):
 # BENCHMARK PRINCIPALE
 # =============================================================================
 
+def _stats(times):
+    t = np.asarray(times, dtype=np.float64)
+    return {
+        "mean_ms": float(np.mean(t)),
+        "std_ms":  float(np.std(t)),
+        "min_ms":  float(np.min(t)),
+        "max_ms":  float(np.max(t)),
+        "p50_ms":  float(np.percentile(t, 50)),
+        "p95_ms":  float(np.percentile(t, 95)),
+    }
+
+
 def run_benchmark(sess, ridge_weights, ridge_bias, x_sample, warmup, runs):
-
+    """
+    Misura CNN, Ridge e pipeline nella STESSA esecuzione: a ogni iterazione si
+    cronometrano separatamente la CNN e il Ridge, e il loro totale. Cosi'
+    pipeline = CNN + Ridge per costruzione (coerenza interna del report).
+    """
     x = x_sample.astype(np.float32)
+    in_name = sess.get_inputs()[0].name
 
-    # Estrai feature CNN una volta (usate dal ridge standalone)
-    feat = sess.run(None, {"input": x})[0]
-
-    # ── CNN ───────────────────────────────────────────────────────────────────
-    def cnn_forward():
-        sess.run(None, {"input": x})
-
-    print(f"  Misuro CNN       ({runs} run, warmup={warmup})...")
-    cnn_stats = measure_latency(cnn_forward, warmup=warmup, runs=runs)
-
-    # ── Ridge ─────────────────────────────────────────────────────────────────
-    def ridge_forward():
-        score = np.dot(feat, ridge_weights) + ridge_bias
-        return 1 if score > 0 else 0
-
-    print(f"  Misuro Ridge     ({runs} run, warmup={warmup})...")
-    ridge_stats = measure_latency(ridge_forward, warmup=warmup, runs=runs)
-
-    # ── Pipeline totale ───────────────────────────────────────────────────────
-    def full_pipeline():
-        f     = sess.run(None, {"input": x})[0]
+    def one_pass():
+        t0 = time.perf_counter()
+        f = sess.run(None, {in_name: x})[0]
+        t1 = time.perf_counter()
         score = np.dot(f, ridge_weights) + ridge_bias
-        return 1 if score > 0 else 0
+        _ = 1 if score > 0 else 0
+        t2 = time.perf_counter()
+        return (t1 - t0) * 1000.0, (t2 - t1) * 1000.0, (t2 - t0) * 1000.0
 
-    print(f"  Misuro pipeline  ({runs} run, warmup={warmup})...")
-    total_stats = measure_latency(full_pipeline, warmup=warmup, runs=runs)
+    print(f"  Misuro CNN + Ridge + pipeline ({runs} run, warmup={warmup})...")
+    for _ in range(warmup):
+        one_pass()
+    cnn_t, ridge_t, tot_t = [], [], []
+    for _ in range(runs):
+        c, r, t = one_pass()
+        cnn_t.append(c)
+        ridge_t.append(r)
+        tot_t.append(t)
 
     # ── RAM delta ─────────────────────────────────────────────────────────────
     print("  Misuro RAM delta...")
-    ram_delta_mb = measure_ram_delta(full_pipeline, samples=20)
+    ram_delta_mb = measure_ram_delta(lambda: one_pass(), samples=20)
 
     return {
-        "cnn":      cnn_stats,
-        "ridge":    ridge_stats,
-        "pipeline": total_stats,
+        "cnn":      _stats(cnn_t),
+        "ridge":    _stats(ridge_t),
+        "pipeline": _stats(tot_t),
         "ram_delta_mb": ram_delta_mb,
     }
 
@@ -245,7 +270,8 @@ def export_txt_report(latency, resources, ram_delta_mb, args, out_path):
 
     lines = [
         sep,
-        "  BENCHMARK CNN + RIDGE — REPORT",
+        "  BENCHMARK CNN + RIDGE — REPORT (CPU HOST, onnxruntime)",
+        "  Tempi NON confrontabili con le misure su board STM32.",
         sep, "",
         f"  Modello ONNX : {args.model}",
         f"  Input shape  : {args.input_shape}",
@@ -262,7 +288,7 @@ def export_txt_report(latency, resources, ram_delta_mb, args, out_path):
         thin,
         f"  RAM delta inferenza : {ram_delta_mb:.3f} MB",
         "", thin,
-        "  TABELLA 2 — STIMA RISORSE EMBEDDED STM32",
+        "  TABELLA 2 — STIMA ANALITICA RISORSE (non misurata su board)",
         thin,
         "  Flash",
         f"    ONNX model          : {resources['onnx_flash_kb']:>8.1f} KB",
@@ -276,9 +302,19 @@ def export_txt_report(latency, resources, ram_delta_mb, args, out_path):
         f"    Buffer interno est. : {resources['internal_ram_kb']:>8.2f} KB",
         f"    Totale RAM          : {resources['total_ram_kb']:>8.2f} KB",
         "",
-        "  Compatibilità STM32H7 (2 MB Flash int. / 512 KB RAM)",
-        f"    Flash OK            : {'SI' if resources['stm32_flash_ok'] else 'NO — supera 2 MB Flash interna'}",
-        f"    RAM OK              : {'SI' if resources['stm32_ram_ok']   else 'NO — supera 512 KB RAM'}",
+    ]
+    if resources["flash_limit_kb"] is None and resources["ram_limit_kb"] is None:
+        lines += ["  Limiti Flash/RAM del target non specificati: nessuna verifica di compatibilita'.",
+                  "  (usare --flash-limit-kb / --ram-limit-kb con i valori della scheda scelta)"]
+    else:
+        def esito(ok, limite, nome):
+            if limite is None:
+                return f"    {nome:<20}: non verificato (limite non specificato)"
+            return f"    {nome:<20}: {'SI' if ok else 'NO'}  (limite {limite:.0f} KB)"
+        lines += ["  Compatibilita' con i limiti dichiarati",
+                  esito(resources["flash_entro_limite"], resources["flash_limit_kb"], "Flash entro limite"),
+                  esito(resources["ram_entro_limite"],   resources["ram_limit_kb"],   "RAM entro limite")]
+    lines += [
         "", thin,
         "  TABELLA 3 — THROUGHPUT STIMATO",
         thin,
@@ -292,9 +328,9 @@ def export_txt_report(latency, resources, ram_delta_mb, args, out_path):
     lines += [
         f"  Throughput (mean) : {thr_mean:>8.1f} inf/s",
         f"  Throughput (p95)  : {thr_p95:>8.1f} inf/s",
-        f"  Latenza budget    : {mean_ms:.3f} ms/inf  (vincolo: "
-        f"{REALTIME_WINDOW_MS:.0f} ms/finestra, UL 1699B)  →  "
-        f"{'adeguato' if mean_ms < REALTIME_WINDOW_MS else 'troppo lento'}",
+        f"  Latenza budget    : {mean_ms:.3f} ms/inf  (vincolo operativo: "
+        f"{REALTIME_WINDOW_MS:.0f} ms/finestra; host)  →  "
+        f"{'entro il vincolo' if mean_ms < REALTIME_WINDOW_MS else 'oltre il vincolo'}",
         "",
         sep,
         "  Fine report",
@@ -328,6 +364,12 @@ def main():
                         help="Numero di run di misura (default: 200)")
     parser.add_argument("--out",    default=".",
                         help="Directory output (default: directory corrente)")
+    parser.add_argument("--flash-limit-kb", type=float, default=None,
+                        help="Limite Flash del target in KB (default: nessuna verifica)")
+    parser.add_argument("--ram-limit-kb", type=float, default=None,
+                        help="Limite RAM del target in KB (default: nessuna verifica)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Seed dell'input casuale (default: 0)")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -336,8 +378,6 @@ def main():
     print("\n── CARICAMENTO ──")
     print(f"  ONNX  : {args.model}")
     sess = ort.InferenceSession(args.model)
-    # Salva path per la stima Flash
-    sess._model_path = args.model
 
     print(f"  Coef  : {args.coef}")
     ridge_weights = np.load(args.coef).astype(np.float32).flatten()
@@ -345,7 +385,7 @@ def main():
     print(f"  Bias  : {args.bias}")
     ridge_bias = np.load(args.bias).astype(np.float32).flatten()
 
-    x_sample = np.random.randn(*args.input_shape).astype(np.float32)
+    x_sample = np.random.default_rng(args.seed).standard_normal(args.input_shape).astype(np.float32)
     print(f"  Input shape : {x_sample.shape}")
 
     # ── Benchmark latenze ────────────────────────────────────────────────────
@@ -358,7 +398,9 @@ def main():
     # ── Stima risorse embedded ───────────────────────────────────────────────
     print("\n── STIMA RISORSE STM32 ──")
     resources = estimate_stm32_resources(
-        sess, ridge_weights, ridge_bias, args.input_shape)
+        sess, ridge_weights, ridge_bias, args.input_shape,
+        model_path=args.model,
+        flash_limit_kb=args.flash_limit_kb, ram_limit_kb=args.ram_limit_kb)
 
     # ── Stampa a terminale ───────────────────────────────────────────────────
     print("\n── RISULTATI ──")
@@ -379,11 +421,11 @@ def main():
               f"{s['p95_ms']:6.3f}  ms")
     print(f"\n  RAM delta : {latency['ram_delta_mb']:.3f} MB")
 
-    print("\n── RISORSE STM32 ──")
-    print(f"  Flash totale : {resources['total_flash_kb']:.1f} KB  "
-          f"({'OK' if resources['stm32_flash_ok'] else 'ATTENZIONE: >2MB'})")
-    print(f"  RAM totale   : {resources['total_ram_kb']:.2f} KB  "
-          f"({'OK' if resources['stm32_ram_ok'] else 'ATTENZIONE: >512KB'})")
+    print("\n── STIMA RISORSE ──")
+    def _esito(ok):
+        return "limite non specificato" if ok is None else ("entro il limite" if ok else "OLTRE IL LIMITE")
+    print(f"  Flash totale : {resources['total_flash_kb']:.1f} KB  ({_esito(resources['flash_entro_limite'])})")
+    print(f"  RAM totale   : {resources['total_ram_kb']:.2f} KB  ({_esito(resources['ram_entro_limite'])})")
 
     # ── Export ───────────────────────────────────────────────────────────────
     print("\n── EXPORT ──")
