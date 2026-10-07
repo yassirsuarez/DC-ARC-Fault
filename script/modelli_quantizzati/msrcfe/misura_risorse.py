@@ -32,6 +32,17 @@ import numpy as np
 import psutil
 import onnxruntime as ort
 
+# Vincolo temporale reale imposto dalla pipeline di classificazione real-time
+# (vedi build_dataset_new.py: WINDOW_S = 0.10 s, la finestra di classificazione).
+# Lo standard UL 1699B richiede che il dispositivo rilevi l'arco entro il tempo
+# limite previsto dai suoi criteri di sicurezza; nella nostra pipeline questo si
+# traduce nel vincolo operativo di elaborare una finestra di 100 ms prima che
+# arrivi la successiva. NON è un requisito a 50 Hz: quella soglia (20 ms) era
+# un valore arbitrario, pensato per il benchmark locale su CPU host (dove la
+# pipeline gira in meno di 1 ms) e non ha alcun riscontro nei parametri reali
+# del progetto o nello standard citato.
+REALTIME_WINDOW_MS = 100.0  # WINDOW_S * 1000, da build_dataset_new.py
+
 
 # =============================================================================
 # TIMING
@@ -281,8 +292,9 @@ def export_txt_report(latency, resources, ram_delta_mb, args, out_path):
     lines += [
         f"  Throughput (mean) : {thr_mean:>8.1f} inf/s",
         f"  Throughput (p95)  : {thr_p95:>8.1f} inf/s",
-        f"  Latenza budget    : {mean_ms:.3f} ms/inf  →  "
-        f"{'adeguato per 50 Hz' if mean_ms < 20 else 'troppo lento per 50 Hz'}",
+        f"  Latenza budget    : {mean_ms:.3f} ms/inf  (vincolo: "
+        f"{REALTIME_WINDOW_MS:.0f} ms/finestra, UL 1699B)  →  "
+        f"{'adeguato' if mean_ms < REALTIME_WINDOW_MS else 'troppo lento'}",
         "",
         sep,
         "  Fine report",
