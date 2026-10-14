@@ -1,0 +1,81 @@
+{
+ "versione": "v2",
+ "args": {
+  "repo": ".",
+  "out": "..\\ris_carico_W1_step",
+  "scenari": [
+   "step:-0.05",
+   "step:+0.05"
+  ],
+  "W": 1.0,
+  "gate": "level",
+  "gate_frac": 0.98,
+  "pad": 4.0,
+  "t0": null,
+  "gmin": 0.5,
+  "modelli": [
+   "inc_fp32",
+   "ms_fp32"
+  ],
+  "downsample_factor": 1,
+  "selftest": false
+ },
+ "risultati": [
+  {
+   "scenario": "step:-0.05",
+   "modello": "inc_fp32",
+   "metodo": "statico",
+   "fpr_pre": 0.3078379401741764,
+   "dr_arco": 1.0,
+   "fp": 813,
+   "fn": 0,
+   "n_pre": 2641,
+   "n_arco": 4520,
+   "gate_chiuso": 0.9958349110185536,
+   "err_mediano": 0.05263157894736881,
+   "err_p95": 0.052697598112732225
+  },
+  {
+   "scenario": "step:-0.05",
+   "modello": "inc_fp32",
+   "metodo": "causale",
+   "fpr_pre": 0.3070806512684589,
+   "dr_arco": 1.0,
+   "fp": 811,
+   "fn": 0,
+   "n_pre": 2641,
+   "n_arco": 4520,
+   "gate_chiuso": 0.9958349110185536,
+   "err_mediano": 0.05263157894736881,
+   "err_p95": 0.052697598112732225
+  },
+  {
+   "scenario": "step:-0.05",
+   "modello": "ms_fp32",
+   "metodo": "statico",
+   "fpr_pre": 0.24081787201817492,
+   "dr_arco": 0.9997787610619469,
+   "fp": 636,
+   "fn": 1,
+   "n_pre": 2641,
+   "n_arco": 4520,
+   "gate_chiuso": 0.9958349110185536,
+   "err_mediano": 0.05263157894736881,
+   "err_p95": 0.052697598112732225
+  },
+  {
+   "scenario": "step:-0.05",
+   "modello": "ms_fp32",
+   "metodo": "causale",
+   "fpr_pre": 0.24081787201817492,
+   "dr_arco": 0.9997787610619469,
+   "fp": 636,
+   "fn": 1,
+   "n_pre": 2641,
+   "n_arco": 4520,
+   "gate_chiuso": 0.9958349110185536,
+   "err_mediano": 0.05263157894736881,
+   "err_p95": 0.052697598112732225
+  }
+ ]
+}
